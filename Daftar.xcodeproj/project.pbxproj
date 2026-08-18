@@ -1,0 +1,408 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		51858810120B5E3161745BFB /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FADF2AB3791C3DB2226209AB /* Cocoa.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0ED445B541647A6EFBDA17C6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E1E1E1E1E1E1E1E1E1E1E10A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E1E1E1E1E1E1E1E1E1E1E106;
+			remoteInfo = Daftar;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		2C47F74193569CB382269C3B /* DaftarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DaftarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1E1E1E1E1E1E1E1E1E1E101 /* Daftar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Daftar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FADF2AB3791C3DB2226209AB /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		538E67ADB3EA6F3738E00B35 /* DaftarTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DaftarTests;
+			sourceTree = "<group>";
+		};
+		E1E1E1E1E1E1E1E1E1E1E102 /* Daftar */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Daftar;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		3C2831800DDCF8EB849E6F41 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				51858810120B5E3161745BFB /* Cocoa.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E1E1E1E1E1E1E1E1E1E1E103 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		48B13EE7C4EF5F98799B9916 /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				FADF2AB3791C3DB2226209AB /* Cocoa.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+		BEE73F04B83C853D721E5FE9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				48B13EE7C4EF5F98799B9916 /* OS X */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		E1E1E1E1E1E1E1E1E1E1E104 = {
+			isa = PBXGroup;
+			children = (
+				E1E1E1E1E1E1E1E1E1E1E102 /* Daftar */,
+				E1E1E1E1E1E1E1E1E1E1E105 /* Products */,
+				BEE73F04B83C853D721E5FE9 /* Frameworks */,
+				538E67ADB3EA6F3738E00B35 /* DaftarTests */,
+			);
+			sourceTree = "<group>";
+		};
+		E1E1E1E1E1E1E1E1E1E1E105 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E1E1E1E1E1E1E1E1E1E1E101 /* Daftar.app */,
+				2C47F74193569CB382269C3B /* DaftarTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CF02014993543A3E5D55B178 /* DaftarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EA21516504D04F6FD93DC1AF /* Build configuration list for PBXNativeTarget "DaftarTests" */;
+			buildPhases = (
+				B1AC2E18E49843E4ABB403D7 /* Sources */,
+				3C2831800DDCF8EB849E6F41 /* Frameworks */,
+				FA54D33449E692A442869F96 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9DBD3E300482F0F424332559 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				538E67ADB3EA6F3738E00B35 /* DaftarTests */,
+			);
+			name = DaftarTests;
+			productName = DaftarTests;
+			productReference = 2C47F74193569CB382269C3B /* DaftarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E1E1E1E1E1E1E1E1E1E1E106 /* Daftar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E1E1E1E1E1E1E1E1E1E1E107 /* Build configuration list for PBXNativeTarget "Daftar" */;
+			buildPhases = (
+				E1E1E1E1E1E1E1E1E1E1E108 /* Sources */,
+				E1E1E1E1E1E1E1E1E1E1E103 /* Frameworks */,
+				E1E1E1E1E1E1E1E1E1E1E109 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E1E1E1E1E1E1E1E1E1E1E102 /* Daftar */,
+			);
+			name = Daftar;
+			productName = Daftar;
+			productReference = E1E1E1E1E1E1E1E1E1E1E101 /* Daftar.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E1E1E1E1E1E1E1E1E1E1E10A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					CF02014993543A3E5D55B178 = {
+						TestTargetID = E1E1E1E1E1E1E1E1E1E1E106;
+					};
+					E1E1E1E1E1E1E1E1E1E1E106 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = E1E1E1E1E1E1E1E1E1E1E10B /* Build configuration list for PBXProject "Daftar" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				ar,
+				Base,
+			);
+			mainGroup = E1E1E1E1E1E1E1E1E1E1E104;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E1E1E1E1E1E1E1E1E1E1E105 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E1E1E1E1E1E1E1E1E1E1E106 /* Daftar */,
+				CF02014993543A3E5D55B178 /* DaftarTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E1E1E1E1E1E1E1E1E1E1E109 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA54D33449E692A442869F96 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B1AC2E18E49843E4ABB403D7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E1E1E1E1E1E1E1E1E1E1E108 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9DBD3E300482F0F424332559 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = Daftar;
+			target = E1E1E1E1E1E1E1E1E1E1E106 /* Daftar */;
+			targetProxy = 0ED445B541647A6EFBDA17C6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0235A725A8B0A77020AB8FAF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alaa.daftar.DaftarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Daftar.app/Contents/MacOS/Daftar";
+			};
+			name = Debug;
+		};
+		6CD32ED1E5D223DEABD768DA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alaa.daftar.DaftarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Daftar.app/Contents/MacOS/Daftar";
+			};
+			name = Release;
+		};
+		E1E1E1E1E1E1E1E1E1E1E10C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E1E1E1E1E1E1E1E1E1E1E10D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		E1E1E1E1E1E1E1E1E1E1E10E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Daftar/Daftar.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Daftar uses the microphone to record audio notes you choose to insert into a page.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alaa.daftar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E1E1E1E1E1E1E1E1E1E1E10F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Daftar/Daftar.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Daftar uses the microphone to record audio notes you choose to insert into a page.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alaa.daftar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E1E1E1E1E1E1E1E1E1E1E107 /* Build configuration list for PBXNativeTarget "Daftar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1E1E1E1E1E1E1E1E1E1E10E /* Debug */,
+				E1E1E1E1E1E1E1E1E1E1E10F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E1E1E1E1E1E1E1E1E1E1E10B /* Build configuration list for PBXProject "Daftar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1E1E1E1E1E1E1E1E1E1E10C /* Debug */,
+				E1E1E1E1E1E1E1E1E1E1E10D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EA21516504D04F6FD93DC1AF /* Build configuration list for PBXNativeTarget "DaftarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CD32ED1E5D223DEABD768DA /* Release */,
+				0235A725A8B0A77020AB8FAF /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E1E1E1E1E1E1E1E1E1E1E10A /* Project object */;
+}
