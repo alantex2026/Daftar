@@ -6,13 +6,15 @@ import SwiftUI
 import AppKit
 
 struct PreferencesView: View {
-    @ObservedObject var editor: EditorController
-    @AppStorage("showSidebar") private var showSidebar = true
-    @AppStorage("appearanceMode") private var appearanceMode = "system"
-    @AppStorage("editorFontName") private var editorFontName = "System"
-    @AppStorage("editorFontSize") private var editorFontSize: Double = 13
-    @AppStorage("autoEmptyTrashEnabled") private var autoEmptyTrashEnabled = true
-    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = true
+    @AppStorage(AppSettings.spellCheckEnabled) private var spellCheckOn = true
+    @AppStorage(AppSettings.editorZoom) private var zoom = 1.0
+    @AppStorage(AppSettings.autoSaveDelay) private var autoSaveDelay = 1.0
+    @AppStorage(AppSettings.showSidebar) private var showSidebar = true
+    @AppStorage(AppSettings.appearanceMode) private var appearanceMode = "system"
+    @AppStorage(AppSettings.editorFontName) private var editorFontName = "System"
+    @AppStorage(AppSettings.editorFontSize) private var editorFontSize: Double = 13
+    @AppStorage(AppSettings.autoEmptyTrashEnabled) private var autoEmptyTrashEnabled = true
+    @AppStorage(AppSettings.hasSeenOnboarding) private var hasSeenOnboarding = true
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
@@ -31,8 +33,8 @@ struct PreferencesView: View {
             }
 
             Section("Editor") {
-                Toggle("Check spelling while typing", isOn: $editor.spellCheckOn)
-                Stepper("Zoom: \(Int(editor.zoom * 100))%", value: $editor.zoom, in: 0.5...2.0, step: 0.1)
+                Toggle("Check spelling while typing", isOn: $spellCheckOn)
+                Stepper("Zoom: \(Int(zoom * 100))%", value: $zoom, in: 0.5...2.0, step: 0.1)
                 Picker("Default font", selection: $editorFontName) {
                     Text("System").tag("System")
                     ForEach(fontFamilies, id: \.self) { family in
@@ -46,8 +48,8 @@ struct PreferencesView: View {
             }
 
             Section("Saving") {
-                Stepper("Auto-save delay: \(editor.autoSaveDelay, specifier: "%.1f")s",
-                        value: $editor.autoSaveDelay, in: 0.1...3.0, step: 0.1)
+                Stepper("Auto-save delay: \(autoSaveDelay, specifier: "%.1f")s",
+                        value: $autoSaveDelay, in: 0.5...30.0, step: 0.5)
                 Text("How long to wait after you stop typing before saving.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -22,9 +22,14 @@ struct ContentView: View {
     @State private var selectedPage: Page?
     @State private var openTabs: [NoteSection] = []
     @State private var searchText = ""
+    let sessionID: String
+    @State private var restoredSession = false
     @State private var showOnboarding = false
     @State private var errorMessage: String?
     @State private var appendAudioID: UUID?
+    @StateObject private var contextSaver = SaveCoordinator()
+    @EnvironmentObject private var sectionLock: SectionLockStore
+    @EnvironmentObject private var folderSync: FolderSync
 
     var body: some View {
         SplitContainerView(isSidebarVisible: $showSidebar) {
@@ -46,9 +51,28 @@ struct ContentView: View {
         // that is what lets macOS's window snapping actually reach it.
         // Height is unaffected by side-by-side tiling, so it's untouched.
         .frame(minWidth: 640, minHeight: 620)
+        .onDisappear {
+            contextSaver.flush()
+            editor.onNavigateToLink = nil
+            editor.onRequestAudioAppend = nil
+            editor.textView = nil
+        }
         .task {
+            let modelContext = context
+            contextSaver.saveContext = { try modelContext.save() }
+            contextSaver.onError = { [weak controller = editor] in controller?.errorMessage = $0 }
+            do {
+                try LibraryIdentity.normalize(context: context)
+                try PagePayload.migrateLegacyColumns(context: context)
+                try PagePayload.migrateHistoryToRevisions(context: context)
+                let pageIDs = try context.fetch(FetchDescriptor<Page>()).map(\.linkID)
+                SessionStore.pruneCursors(keeping: Set(pageIDs))
+            }
+            catch { editor.errorMessage = "Couldn't prepare the library. \(error.localizedDescription)"; return }
+            folderSync.attach(context: context, locks: sectionLock)
             SampleData.seedIfNeeded(context: context)
             TrashMaintenance.purgeExpired(context: context)
+            restoreSession()
             openFirstSectionIfNeeded()
             if !hasSeenOnboarding { showOnboarding = true }
             editor.onNavigateToLink = { linkID in navigateToPage(withLinkID: linkID) }
@@ -67,29 +91,32 @@ struct ContentView: View {
         .onChange(of: hasSeenOnboarding) { _, seen in
             if !seen { showOnboarding = true }
         }
+        .onChange(of: openTabs.map(\.stableID)) { _, _ in saveSession() }
         .onChange(of: selectedSection) { _, newSection in
-            guard let newSection else { return }
+            guard let newSection else { saveSession(); return }
             if !openTabs.contains(where: { $0 === newSection }) { openTabs.append(newSection) }
             if selectedPage?.section !== newSection {
                 selectedPage = newSection.rootPages.first
             }
+            saveSession()
         }
-        .onChange(of: selectedPage) { _, page in
-            PerfLog.measure("ContentView: page.lastOpenedAt = Date()") {
-                page?.lastOpenedAt = Date()
-            }
-        }
+        .onChange(of: selectedPage) { _, _ in saveSession() }
+        // Sync, Trash and auto-purge can delete models this window still
+        // references; drop those references before anything reads them.
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in pruneDeletedSelection() }
         // A scoped subscription instead of @ObservedObject - this is the
         // one piece of editor state ContentView itself needs to react to.
         .onReceive(editor.$errorMessage) { errorMessage = $0 }
         .alert("Something Went Wrong",
                isPresented: Binding(get: { errorMessage != nil },
                                     set: { if !$0 { errorMessage = nil; editor.errorMessage = nil } })) {
+            Button("Retry Saving") { SaveCoordinator.flushAll() }
             Button("OK") {}
         } message: {
             Text(errorMessage ?? "")
         }
         .toolbar {
+            ToolbarItem { LibraryToolsView() }
             ToolbarItem(placement: .navigation) {
                 Button {
                     // The actual collapse animation happens in
@@ -101,12 +128,23 @@ struct ContentView: View {
                 }
                 .help("Show or hide the sidebar")
             }
-            ToolbarItem { InsertMenu(editor: editor, page: selectedPage) }
-            ToolbarItem { StyleFormatGroup(editor: editor) }
-            ToolbarItem { FontFormatGroup(editor: editor) }
-            ToolbarItem { ParagraphFormatGroup(editor: editor) }
-            ToolbarItem { TagBar(editor: editor, page: selectedPage) }
-            ToolbarItem { ShareMenu(editor: editor, page: selectedPage) }
+            // The format/insert/share controls all act through `editor.textView`,
+            // which spreadsheet pages never set - showing them there would let
+            // people click Bold or Export on a page that can't use either, and
+            // (worse) silently edit whatever page last owned the text view.
+            if let selectedPage, selectedPage.kind != .spreadsheet, sectionLock.canShow(selectedPage) {
+                ToolbarItem { InsertMenu(editor: editor, page: selectedPage) }
+                ToolbarItem { StyleFormatGroup(editor: editor) }
+                ToolbarItem { FontFormatGroup(editor: editor) }
+                ToolbarItem { ParagraphFormatGroup(editor: editor) }
+            }
+            if let selectedPage, sectionLock.canShow(selectedPage) {
+                ToolbarItem { TagBar(editor: editor, page: selectedPage) }
+                ToolbarItem { PageToolsView(page: selectedPage) }
+            }
+            if let selectedPage, selectedPage.kind != .spreadsheet, sectionLock.canShow(selectedPage) {
+                ToolbarItem { ShareMenu(editor: editor, page: selectedPage) }
+            }
             ToolbarItem {
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -137,6 +175,31 @@ struct ContentView: View {
             selectedSection = owner
         }
         selectedPage = target
+    }
+
+    private func restoreSession() {
+        guard !restoredSession else { return }
+        if let saved = SessionStore.load(sessionID),
+           let sections = try? context.fetch(FetchDescriptor<NoteSection>()),
+           let pages = try? context.fetch(FetchDescriptor<Page>()) {
+            openTabs = saved.tabs.compactMap { id in sections.first { $0.stableID == id && !$0.isTrashed } }
+            selectedSection = sections.first { $0.stableID == saved.section && !$0.isTrashed }
+            selectedPage = pages.first { $0.linkID == saved.page && !$0.isTrashed }
+        }
+        restoredSession = true
+    }
+
+    private func pruneDeletedSelection() {
+        func gone(_ model: any PersistentModel) -> Bool { model.isDeleted || model.modelContext == nil }
+        if openTabs.contains(where: gone) { openTabs.removeAll(where: gone) }
+        if let section = selectedSection, gone(section) { selectedSection = nil }
+        if let page = selectedPage, gone(page) { selectedPage = nil }
+    }
+
+    private func saveSession() {
+        guard restoredSession else { return }
+        SessionStore.save(WindowSession(tabs: openTabs.map(\.stableID),
+            section: selectedSection?.stableID, page: selectedPage?.linkID), id: sessionID)
     }
 
     private func openFirstSectionIfNeeded() {

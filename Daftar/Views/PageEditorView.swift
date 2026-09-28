@@ -18,10 +18,10 @@ struct PageEditorView: View {
                         .id(page.persistentModelID)
                         .transition(.opacity)
                 } else if let page {
-                    PaperView(page: page, editor: editor)
-                        // A new id tells SwiftUI: different document, rebuild the editor.
-                        .id(page.persistentModelID)
-                        .transition(.opacity)
+                    ValidatedPageEditor(page: page, editor: editor)
+                    // A new id tells SwiftUI: different document, rebuild the editor.
+                    .id(page.persistentModelID)
+                    .transition(.opacity)
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "doc.text")
@@ -83,35 +83,61 @@ struct LockedPageView: View {
     }
 }
 
+/// The title field + thin underline rule shared by every page editor -
+/// only the body underneath differs (rich text, paginated, spreadsheet).
+struct PageTitleHeader: View {
+    @State private var historyError: String?
+    @Bindable var page: Page
+    @Environment(\.modelContext) private var context
+    @StateObject private var saver = SaveCoordinator()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                TextField("Untitled", text: Binding(get: { page.title }, set: { title in
+                    do { try PageHistory.capture(page); page.title = title }
+                    catch { historyError = error.localizedDescription }
+                }))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 34, weight: .regular, design: .rounded))
+                    .foregroundStyle(AppTheme.paperText)
+                    .onChange(of: page.title) { _, title in
+                        page.updatedAt = Date()
+                        let context = context
+                        // Debounced like body text: one save per pause, not per keystroke.
+                        saver.rescue = { folder in
+                            let url = SaveCoordinator.rescueURL(named: title + " (title)", extension: "txt", in: folder)
+                            try title.write(to: url, atomically: true, encoding: .utf8)
+                            return url
+                        }
+                        saver.schedule(delay: AppSettings.saveDelay) { try context.save() }
+                    }
+                    .onDisappear { saver.flush() }
+                if let historyError { Text(historyError).font(.caption).foregroundStyle(.red) }
+                if saver.state == .failed { SaveStateIndicator(state: .failed) }
+                if page.tag != .none { TagBadge(tag: page.tag, size: 22) }
+            }
+            Rectangle()
+                .fill(AppTheme.paperText.opacity(0.25))
+                .frame(height: 1)
+        }
+        .padding(.horizontal, 52)
+        .padding(.top, 30)
+        .padding(.bottom, 8)
+    }
+}
+
 struct PaperView: View {
+    @Environment(\.modelContext) private var context
     @Bindable var page: Page
     @ObservedObject var editor: EditorController
 
     var body: some View {
         VStack(spacing: 0) {
-            // Title with the thin rule underneath it.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 10) {
-                    TextField("Untitled", text: $page.title)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 34, weight: .regular, design: .rounded))
-                        .foregroundStyle(AppTheme.paperText)
-                        .onChange(of: page.title) { _, _ in page.updatedAt = Date() }
-                    if page.tag != .none { TagBadge(tag: page.tag, size: 22) }
-                }
-                Rectangle()
-                    .fill(AppTheme.paperText.opacity(0.25))
-                    .frame(height: 1)
-            }
-            .padding(.horizontal, 52)
-            .padding(.top, 30)
-            .padding(.bottom, 8)
+            PageTitleHeader(page: page)
 
-            RichTextEditor(initialData: page.contentData, controller: editor) { data, plain, linkIDs in
-                page.contentData = data
-                page.plainText = plain
-                page.outgoingLinkIDs = linkIDs
-                page.updatedAt = Date()
+            RichTextEditor(initialData: page.contentData, controller: editor, pageID: page.linkID) { data, plain, links in
+                try page.saveRichText(data, plainText: plain, links: links, in: context)
             }
 
             BacklinksView(page: page, editor: editor)
@@ -123,13 +149,56 @@ struct PaperView: View {
     }
 }
 
+/// The editor for a `.document` page - same title header as a regular
+/// note, but the body is `PaginatedTextEditor` instead of `RichTextEditor`.
+struct DocumentPaperView: View {
+    @StateObject private var saver = SaveCoordinator()
+    @Environment(\.modelContext) private var context
+    @Bindable var page: Page
+    @ObservedObject var editor: EditorController
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PageTitleHeader(page: page)
+
+            HStack {
+                Picker("Paper size", selection: Binding(get: { page.paperSize }, set: { value in
+                    do { try PageHistory.capture(page); page.paperSize = value }
+                    catch { editor.errorMessage = error.localizedDescription }
+                })) {
+                    Text("US Letter").tag("letter")
+                    Text("A4").tag("a4")
+                    Text("Legal").tag("legal")
+                }
+                .frame(width: 200)
+                .onChange(of: page.paperSize) { _, _ in
+                    saver.schedule(delay: 0) { try context.save() }
+                    saver.flush()
+                }
+                Spacer()
+            }.padding(.horizontal, 52)
+
+            PaginatedTextEditor(initialData: page.contentData, controller: editor, pageID: page.linkID, paperSize: page.paperSize) { data, plain, links in
+                try page.saveRichText(data, plainText: plain, links: links, in: context)
+            }
+
+            BacklinksView(page: page, editor: editor)
+            Divider()
+            StatusBar(editor: editor)
+        }
+        .background(AppTheme.paper)
+    }
+}
+
 /// A row of chips for every other page whose text currently links to this
 /// one - the reverse of a link, so following a thread of notes works both
 /// ways instead of only forward from wherever the link was written.
 struct BacklinksView: View {
-    @Query private var allPages: [Page]
+    @Query(filter: #Predicate<Page> { $0.deletedAt == nil }) private var allPages: [Page]
     let page: Page
-    @ObservedObject var editor: EditorController
+    // Only used for navigation. Not observed: observing would recompute
+    // backlinks across every page on every keystroke (word count changes).
+    let editor: EditorController
     @EnvironmentObject private var sectionLock: SectionLockStore
 
     private var backlinks: [Page] {
@@ -169,12 +238,42 @@ struct BacklinksView: View {
     }
 }
 
+/// "Saving…" / "Saved" (or nothing yet), the same look wherever a page
+/// shows its persistence state - the format-toolbar-backed editors via
+/// `StatusBar`, and the spreadsheet's own lighter-weight footer.
+struct SaveStateIndicator: View {
+    let state: EditorController.SaveState
+
+    var body: some View {
+        switch state {
+        case .idle:
+            EmptyView()
+        case .saving:
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text("Saving\u{2026}").font(.system(size: 12))
+            }
+        case .failed:
+            Button("Save failed — Retry") { SaveCoordinator.flushAll() }
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+        case .saved:
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.green)
+                Text("Saved").font(.system(size: 12))
+            }
+        }
+    }
+}
+
 struct StatusBar: View {
     @ObservedObject var editor: EditorController
 
     var body: some View {
         HStack(spacing: 16) {
-            saveStateLabel
+            SaveStateIndicator(state: editor.saveState)
 
             Spacer()
 
@@ -218,25 +317,5 @@ struct StatusBar: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
         .background(AppTheme.paper)
-    }
-
-    @ViewBuilder
-    private var saveStateLabel: some View {
-        switch editor.saveState {
-        case .idle:
-            EmptyView()
-        case .saving:
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.small)
-                Text("Saving\u{2026}").font(.system(size: 12))
-            }
-        case .saved:
-            HStack(spacing: 5) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.green)
-                Text("Saved").font(.system(size: 12))
-            }
-        }
     }
 }

@@ -152,45 +152,19 @@ struct TrashView: View {
 
     // MARK: Actions
 
-    /// Restoring also restores any trashed ancestor, so the item is
-    /// actually reachable again instead of quietly staying hidden.
     private func restore(_ row: Row) {
         switch row.kind {
-        case .notebook(let n):
-            n.deletedAt = nil
-        case .section(let s):
-            s.deletedAt = nil
-            restoreAncestors(of: s)
-        case .page(let p):
-            p.deletedAt = nil
-            restoreAncestors(of: p)
-        }
-    }
-
-    private func restoreAncestors(of section: NoteSection) {
-        if let parent = section.parent {
-            parent.deletedAt = nil
-            restoreAncestors(of: parent)
-        }
-        section.notebook?.deletedAt = nil
-    }
-
-    private func restoreAncestors(of page: Page) {
-        if let parent = page.parent {
-            parent.deletedAt = nil
-            restoreAncestors(of: parent)
-        }
-        if let section = page.section {
-            section.deletedAt = nil
-            restoreAncestors(of: section)
+        case .notebook(let n): LibraryActions.restore(n)
+        case .section(let s): LibraryActions.restore(s)
+        case .page(let p): LibraryActions.restore(p)
         }
     }
 
     private func deletePermanently(_ row: Row) {
         switch row.kind {
-        case .notebook(let n): context.delete(n)
-        case .section(let s): context.delete(s)
-        case .page(let p): context.delete(p)
+        case .notebook(let n): LibraryActions.deletePermanently(n, context: context)
+        case .section(let s): LibraryActions.deletePermanently(s, context: context)
+        case .page(let p): LibraryActions.deletePermanently(p, context: context)
         }
     }
 }

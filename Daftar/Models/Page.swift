@@ -7,15 +7,33 @@ import SwiftData
 
 @Model
 final class Page {
+    var customTags: [String] = []
+    /// Content, spreadsheet and history live in `PagePayload`, a separate
+    /// row loaded only when accessed, so listing, searching and counting
+    /// pages never pulls megabytes of RTFD and history into memory.
+    /// (Not `.externalStorage`: enabling it on an existing store makes SwiftData
+    /// read previously-nil blobs back as empty Data - verified on a real library.)
+    @Relationship(deleteRule: .cascade, inverse: \PagePayload.page) var payload: PagePayload?
+    // Pre-payload columns, renamed so a lightweight migration keeps their data.
+    // `PagePayload.migrateLegacyColumns` moves it into `payload` once.
+    @Attribute(originalName: "historyData") var legacyHistoryData: Data?
+    @Attribute(originalName: "contentData") var legacyContentData: Data?
+    @Attribute(originalName: "spreadsheetData") var legacySpreadsheetData: Data?
+    /// When the newest history revision was captured - lets a save skip
+    /// decoding `historyData` inside the one-minute coalescing window.
+    var historyCapturedAt: Date?
+    var paperSize: String = "letter"
     var title: String = "Untitled"
-    var contentData: Data?          // formatted text saved as RTFD
     var plainText: String = ""      // plain copy, used by search
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
+    // Retained for compatibility with existing stores; no longer tracked.
     var lastOpenedAt: Date = Date.distantPast
     var sortIndex: Int = 0
     var isExpanded: Bool = true
     var tagRaw: Int = 0             // see PageTag
+    var pageKindRaw: Int = 0        // see PageKind
+
 
     /// Set when this page is moved to the Trash. `nil` means it is live.
     var deletedAt: Date?
@@ -74,7 +92,53 @@ final class Page {
         set { tagRaw = newValue.rawValue }
     }
 
+    var kind: PageKind {
+        get { PageKind(rawValue: pageKindRaw) ?? .richText }
+        set { pageKindRaw = newValue.rawValue }
+    }
+
     var isPinned: Bool { pinnedAt != nil }
+
+    // MARK: - Payload
+
+    /// Formatted text saved as RTFD.
+    var contentData: Data? {
+        get { payload?.contentData ?? legacyContentData }
+        set { writablePayload().contentData = newValue }
+    }
+
+    /// Only set for `.spreadsheet` pages - a JSON-encoded `SpreadsheetData`.
+    /// `.richText` and `.document` pages both use `contentData` (RTFD)
+    /// instead; `.document` differs from `.richText` only in how it's
+    /// rendered (paginated vs. continuous), not in how it's stored.
+    var spreadsheetData: Data? {
+        get { payload?.spreadsheetData ?? legacySpreadsheetData }
+        set { writablePayload().spreadsheetData = newValue }
+    }
+
+    /// JSON-encoded `[PageRevision]`, newest first - the portable form used by
+    /// backups, export and sync. Stored as one row per revision (see
+    /// `PageRevisionEntry`); `PageHistory` works with the rows directly.
+    var historyData: Data? {
+        get { payload?.historyJSON ?? legacyHistoryData }
+        set { writablePayload().setHistoryJSON(newValue) }
+    }
+
+    /// Cheap check that never encodes the history.
+    var hasHistory: Bool {
+        if let payload { return !payload.revisionEntries.isEmpty || payload.legacyHistoryData != nil }
+        return legacyHistoryData != nil
+    }
+
+    /// Creates the payload on first write, carrying over any legacy values
+    /// so writing one field never hides the others.
+    func writablePayload() -> PagePayload {
+        if let payload { return payload }
+        let created = PagePayload(contentData: legacyContentData, spreadsheetData: legacySpreadsheetData, historyData: legacyHistoryData)
+        legacyContentData = nil; legacySpreadsheetData = nil; legacyHistoryData = nil
+        payload = created
+        return created
+    }
 
     func togglePinned() {
         pinnedAt = isPinned ? nil : Date()

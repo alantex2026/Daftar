@@ -10,7 +10,7 @@ enum TrashMaintenance {
     static let retentionDays = 30
 
     static func purgeExpired(context: ModelContext) {
-        guard UserDefaults.standard.object(forKey: "autoEmptyTrashEnabled") as? Bool ?? true else { return }
+        guard AppSettings.emptiesTrash else { return }
         let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: Date()) ?? .distantPast
 
         // Notebooks first: deleting one cascades away its sections and
