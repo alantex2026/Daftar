@@ -9,7 +9,10 @@ enum SampleData {
 
     static func seedIfNeeded(context: ModelContext) {
         let existing = (try? context.fetchCount(FetchDescriptor<Notebook>())) ?? 0
-        guard existing == 0 else { return }
+        guard existing == 0, !UserDefaults.standard.bool(forKey: "hasSeededLibrary") else {
+            if existing > 0 { UserDefaults.standard.set(true, forKey: "hasSeededLibrary") }
+            return
+        }
 
         let guide = Notebook(name: "User Guide", colorName: "teal", sortIndex: 0)
         context.insert(guide)
@@ -51,7 +54,6 @@ enum SampleData {
         _ = page("Section Groups", parent: sections)
         let pages = page("Pages", parent: organizing)
         _ = page("Sub-pages", parent: pages)
-        _ = page("Recent Pages", parent: pages)
 
         let second = NoteSection(name: "Scratch Pad", colorName: "orange", sortIndex: 1)
         second.notebook = guide
@@ -60,6 +62,9 @@ enum SampleData {
         scratch.section = second
         context.insert(scratch)
 
-        try? context.save()
+        do {
+            try context.save()
+            UserDefaults.standard.set(true, forKey: "hasSeededLibrary")
+        } catch { /* Try seeding again on the next launch if persistence fails. */ }
     }
 }

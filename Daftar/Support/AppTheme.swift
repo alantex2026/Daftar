@@ -77,6 +77,42 @@ enum PaletteColor: String, CaseIterable, Identifiable {
 }
 
 /// The little colored marks you can put on a page.
+/// What kind of document a page is - almost every page is `.richText`
+/// (the free-flowing editor); `.document` and `.spreadsheet` are
+/// alternate editors that use the same `Page` model but render and
+/// store their content differently (see `Page.spreadsheetData`).
+enum PageKind: Int, CaseIterable, Identifiable {
+    case richText = 0
+    case document = 1
+    case spreadsheet = 2
+
+    var id: Int { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .richText: return "Note"
+        case .document: return "Document"
+        case .spreadsheet: return "Spreadsheet"
+        }
+    }
+
+    var subtitle: LocalizedStringKey {
+        switch self {
+        case .richText: return "Free-flowing text, checklists, images"
+        case .document: return "Paginated, letter-sized pages"
+        case .spreadsheet: return "A grid with rows, columns, and formulas"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .richText: return "doc.text"
+        case .document: return "doc.richtext"
+        case .spreadsheet: return "tablecells"
+        }
+    }
+}
+
 enum PageTag: Int, CaseIterable, Identifiable {
     case none = 0, question = 1, star = 2, important = 3
 

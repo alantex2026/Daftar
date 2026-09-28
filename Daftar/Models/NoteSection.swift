@@ -7,6 +7,7 @@ import SwiftData
 
 @Model
 final class NoteSection {
+    var stableID: UUID = UUID()
     var name: String = "New Section"
     var colorName: String = "blue"
     var sortIndex: Int = 0
@@ -64,4 +65,18 @@ final class NoteSection {
     private var rootPageCount: Int { pages.filter { !$0.isTrashed }.count }
 
     var nextRootPageIndex: Int { (rootPages.map(\.sortIndex).max() ?? -1) + 1 }
+    /// Includes trashed descendants: their ownership must also move, otherwise
+    /// deleting the old notebook can cascade into the new notebook later.
+    func move(to destination: Notebook) {
+        let index = destination.nextSectionIndex
+        parent = nil
+        reassignNotebook(destination)
+        sortIndex = index
+    }
+
+    private func reassignNotebook(_ destination: Notebook) {
+        notebook = destination
+        for child in children { child.reassignNotebook(destination) }
+    }
+
 }

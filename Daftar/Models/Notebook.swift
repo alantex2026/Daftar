@@ -6,6 +6,7 @@ import SwiftData
 
 @Model
 final class Notebook {
+    var stableID: UUID = UUID()
     var name: String = "New Notebook"
     var colorName: String = "teal"
     var sortIndex: Int = 0

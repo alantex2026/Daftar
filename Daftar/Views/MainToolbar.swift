@@ -354,6 +354,7 @@ struct InsertMenu: View {
                 Button("4 x 4") { editor.insertTable(rows: 4, columns: 4) }
             }
             Button("Picture...") { pickPicture() }
+            Button("Picture Gallery...") { pickGallery() }
             Button("File Attachment...") { pickFile() }
             Button("Record Audio...") { showRecorder = true }
             Divider()
@@ -379,8 +380,16 @@ struct InsertMenu: View {
     private func pickPicture() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { editor.insertImage(from: url) }
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK, !panel.urls.isEmpty { editor.insertImages(from: panel.urls) }
+    }
+
+    private func pickGallery() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.message = String(localized: "Choose photos for the gallery")
+        if panel.runModal() == .OK, !panel.urls.isEmpty { editor.insertImageGallery(from: panel.urls) }
     }
 
     private func pickFile() {
@@ -391,6 +400,7 @@ struct InsertMenu: View {
 }
 
 private struct PageLinkPicker: View {
+    @EnvironmentObject private var sectionLock: SectionLockStore
     @Query private var allPages: [Page]
     @ObservedObject var editor: EditorController
     var currentPage: Page?
@@ -398,7 +408,7 @@ private struct PageLinkPicker: View {
     @State private var query = ""
 
     private var candidates: [Page] {
-        allPages.filter { !$0.isTrashed && $0 !== currentPage }
+        allPages.filter { !$0.isTrashed && $0 !== currentPage && sectionLock.canShow($0) }
             .filter { query.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(query) }
             .sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
     }
