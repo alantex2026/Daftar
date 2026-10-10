@@ -89,12 +89,15 @@ enum NotebookMarkdownIO {
                 text.replacingOccurrences(of: "|", with: "\\|")
                     .replacingOccurrences(of: "\n", with: "<br>")
             }
-            var lines = ["| " + (0..<sheet.columns).map { String(CellReference.name(row: 0, column: $0).dropLast()) }.joined(separator: " | ") + " |",
-                         "| " + Array(repeating: "---", count: sheet.columns).joined(separator: " | ") + " |"]
+            // Built in small typed steps: as one expression, Xcode 16's type
+            // checker gave up on it ("unable to type-check ... in reasonable time").
+            func tableRow(_ cells: [String]) -> String { "| " + cells.joined(separator: " | ") + " |" }
+            let headers: [String] = (0..<sheet.columns).map { String(CellReference.name(row: 0, column: $0).dropLast()) }
+            let rule: [String] = Array(repeating: "---", count: sheet.columns)
+            var lines: [String] = [tableRow(headers), tableRow(rule)]
             for row in 0..<sheet.rows {
-                lines.append("| " + (0..<sheet.columns).map {
-                    escape(sheet.cells[CellReference.name(row: row, column: $0)] ?? "")
-                }.joined(separator: " | ") + " |")
+                let cells: [String] = (0..<sheet.columns).map { escape(sheet.cells[CellReference.name(row: row, column: $0)] ?? "") }
+                lines.append(tableRow(cells))
             }
             body = lines.joined(separator: "\n")
         } else {
