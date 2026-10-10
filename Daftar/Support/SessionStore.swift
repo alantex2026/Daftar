@@ -31,6 +31,34 @@ enum SessionStore {
     static func saveCursor(_ position: Int, id: UUID, defaults: UserDefaults = .standard) {
         defaults.set(max(0, position), forKey: "cursor." + id.uuidString)
     }
+
+    // Editors report the cursor on every keystroke and arrow press. Writing
+    // UserDefaults that often also woke every window's settings observer, so
+    // positions are kept in memory and written at most every couple of seconds.
+    @MainActor private static var pendingCursors: [UUID: Int] = [:]
+    @MainActor private static var cursorWrite: DispatchWorkItem?
+
+    @MainActor static func rememberCursor(_ position: Int, id: UUID) {
+        pendingCursors[id] = max(0, position)
+        guard cursorWrite == nil else { return }
+        let work = DispatchWorkItem { flushCursors() }
+        cursorWrite = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    /// The newest known position, including one not yet written.
+    @MainActor static func latestCursor(_ id: UUID) -> Int {
+        pendingCursors[id] ?? cursor(id)
+    }
+
+    /// Writes remembered positions now. Called on quit and by the timer.
+    @MainActor static func flushCursors(defaults: UserDefaults = .standard) {
+        cursorWrite?.cancel()
+        cursorWrite = nil
+        let pending = pendingCursors
+        pendingCursors = [:]
+        for (id, position) in pending { saveCursor(position, id: id, defaults: defaults) }
+    }
     /// Drops remembered cursor positions for pages that no longer exist, so
     /// preferences don't grow with every page ever opened. Returns how many.
     @discardableResult

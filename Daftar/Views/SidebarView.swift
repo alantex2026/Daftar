@@ -12,6 +12,8 @@ struct SidebarView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.layoutDirection) private var layoutDirection
     @EnvironmentObject private var sectionLock: SectionLockStore
+    @EnvironmentObject private var folderSync: FolderSync
+    @EnvironmentObject private var undoToast: UndoToast
     @Query(sort: \Notebook.sortIndex) private var notebooks: [Notebook]
     // Narrow queries: the sidebar is always on screen and every query here
     // re-runs on every autosave, so never fetch the whole page table.
@@ -30,6 +32,8 @@ struct SidebarView: View {
     @State private var showTrash = false
     @State private var draggedNotebook: Notebook?
     @State private var draggedSection: NoteSection?
+    /// The section a dragged page is hovering over, for its highlight.
+    @State private var pageDropSectionID: PersistentIdentifier?
     @State private var ioError: String?
 
     private var pinned: [Page] {
@@ -63,7 +67,7 @@ struct SidebarView: View {
             Divider().opacity(0.25)
             footer
         }
-        .background(AppTheme.sidebar)
+        .sidebarBackground()
         .alert("Something Went Wrong",
                isPresented: Binding(get: { ioError != nil }, set: { if !$0 { ioError = nil } })) {
             Button("OK") {}
@@ -88,6 +92,7 @@ struct SidebarView: View {
                     .foregroundStyle(AppTheme.sidebarLabel)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(showPinned ? "Collapse Pinned" : "Expand Pinned"))
         }
         .padding(.horizontal, 14)
         .padding(.top, 12)
@@ -115,6 +120,8 @@ struct SidebarView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .help("New notebook and import")
+            .accessibilityLabel(Text("Add Notebook"))
         }
         .padding(.horizontal, 14)
         .padding(.top, 16)
@@ -136,8 +143,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
-        .background(selectedPage === page ? AppTheme.sidebarRowOn : Color.clear)
-        .animation(.easeInOut(duration: 0.15), value: selectedPage)
+        .selectionBackground(selectedPage === page, color: AppTheme.sidebarRowOn)
         .contentShape(Rectangle())
         .onTapGesture { open(page) }
         .contextMenu {
@@ -199,7 +205,7 @@ struct SidebarView: View {
             .padding(.leading, 12 + CGFloat(item.depth - 1) * 15)
             .padding(.trailing, 12)
             .padding(.vertical, 6)
-            .background(selectedSection === section ? AppTheme.sidebarRowOn : Color.clear)
+            .selectionBackground(selectedSection === section, color: AppTheme.sidebarRowOn)
             .contentShape(Rectangle())
             .onSingleAndDoubleTap(single: {
                 if section.isGroup { section.isExpanded.toggle() }
@@ -208,11 +214,30 @@ struct SidebarView: View {
                 startRename(section.persistentModelID, section.name)
             })
             .contextMenu { sectionMenu(section) }
+            .overlay {
+                if pageDropSectionID == section.persistentModelID {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(AppTheme.controlAccent, lineWidth: 2)
+                        .padding(.horizontal, 6)
+                }
+            }
             .onDrag {
                 draggedSection = section
                 return NSItemProvider(item: NSString(string: section.name), typeIdentifier: UTType.daftarSection.identifier)
             }
-            .onDrop(of: [UTType.daftarSection], isTargeted: nil) { _ in
+            // Sections reorder among themselves; a page dropped here moves into this section.
+            .onDrop(of: [UTType.daftarSection, UTType.daftarPage], isTargeted: Binding(
+                get: { pageDropSectionID == section.persistentModelID },
+                set: { targeted in
+                    if targeted, PageDrag.current != nil, !section.isGroup { pageDropSectionID = section.persistentModelID }
+                    else if !targeted, pageDropSectionID == section.persistentModelID { pageDropSectionID = nil }
+                })) { providers in
+                if let page = PageDrag.page(from: providers) {
+                    PageDrag.current = nil
+                    guard !section.isGroup else { return false }
+                    movePage(page, to: section)
+                    return true
+                }
                 guard let dragged = draggedSection else { return false }
                 reorderSections(dragged: dragged, target: section)
                 draggedSection = nil
@@ -229,6 +254,7 @@ struct SidebarView: View {
                 .frame(width: 12)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(isOpen ? "Collapse" : "Expand"))
     }
 
     @ViewBuilder
@@ -251,9 +277,22 @@ struct SidebarView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 12))
-            Text("Last Sync: \(Date().formatted(date: .omitted, time: .shortened))")
+            if folderSync.enabled {
+                Image(systemName: folderSync.needsAttention ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12))
+                Group {
+                    if folderSync.busy || folderSync.needsAttention {
+                        Text(folderSync.status)
+                    } else if let lastSync = folderSync.lastSync {
+                        Text("Last Sync: \(lastSync.formatted(date: .omitted, time: .shortened))")
+                    } else {
+                        Text(folderSync.status)
+                    }
+                }
                 .font(.system(size: 12))
+                .lineLimit(1)
+                .help(folderSync.status)
+            }
             Spacer()
             Button { showTrash = true } label: {
                 HStack(spacing: 4) {
@@ -263,6 +302,8 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Trash")
+            .accessibilityLabel(Text("Trash"))
+            .accessibilityValue(Text(trashedCount == 0 ? "Empty" : "\(trashedCount) items"))
         }
         .foregroundStyle(AppTheme.sidebarLabel)
         .padding(.horizontal, 14)
@@ -319,6 +360,7 @@ struct SidebarView: View {
             openTabs.removeAll { $0.notebook === notebook }
             if selectedSection?.notebook === notebook { selectedSection = nil; selectedPage = nil }
             LibraryActions.trash(notebook)
+            undoToast.trashed(notebook.name) { LibraryActions.restore(notebook) }
         }
     }
 
@@ -378,6 +420,7 @@ struct SidebarView: View {
                 selectedPage = nil
             }
             LibraryActions.trash(section)
+            undoToast.trashed(section.name) { LibraryActions.restore(section) }
         }
     }
 
@@ -474,6 +517,16 @@ struct SidebarView: View {
 
     private func reorderNotebooks(dragged: Notebook, target: Notebook) {
         LibraryActions.reorderNotebooks(notebooks, moving: dragged, to: target)
+    }
+
+    /// A locked destination asks to be unlocked first, so a page can't be
+    /// dropped somewhere its owner can't then see it.
+    private func movePage(_ page: Page, to section: NoteSection) {
+        guard page.section !== section || page.parent != nil else { return }
+        sectionLock.requestUnlock(section, reason: "move this page to \u{201C}\(section.name)\u{201D}") { success in
+            guard success else { return }
+            LibraryActions.move(page, to: section)
+        }
     }
 
     private func reorderSections(dragged: NoteSection, target: NoteSection) {

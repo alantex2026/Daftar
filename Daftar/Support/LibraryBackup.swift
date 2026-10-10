@@ -20,12 +20,13 @@ struct LibraryBackup: Codable, Sendable {
 
     @MainActor
     static func capture(context: ModelContext, locks: SectionLockStore, defaults: UserDefaults = .standard,
-                        structuredHistory: Bool = false) throws -> LibraryBackup {
+                        structuredHistory: Bool = false, includeHistory: Bool = true,
+                        forSync: Bool = false) throws -> LibraryBackup {
         guard SaveCoordinator.flushAll() else { throw BackupError.saveFailed }
         let sections = try context.fetch(FetchDescriptor<NoteSection>())
-        guard sections.allSatisfy({ locks.isUnlocked($0) }) else { throw BackupError.locked }
+        guard locks.canCapture(sections, forSync: forSync) else { throw BackupError.locked }
         let notebooks = try context.fetch(FetchDescriptor<Notebook>(sortBy: [SortDescriptor(\.sortIndex)]))
-        return LibraryBackup(notebooks: notebooks.map { NotebookArchive($0, includeTrash: true, structuredHistory: structuredHistory) },
+        return LibraryBackup(notebooks: notebooks.map { NotebookArchive($0, includeTrash: true, structuredHistory: structuredHistory, includeHistory: includeHistory) },
                              savedSearches: SavedSearchStore.load(defaults: defaults))
     }
 
@@ -48,14 +49,22 @@ struct LibraryBackup: Codable, Sendable {
         return copy
     }
 
+    /// Writes a format 2 backup (see `BackupFile`). Page history is never
+    /// written: backups hold the current library (pages, Trash, attachments,
+    /// saved searches), so they stay small. Sync captures can be written directly.
     func write(to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(self).write(to: url, options: .atomic)
+        try BackupFile(self).encoded().write(to: url, options: .atomic)
     }
 
     static func read(from url: URL) throws -> LibraryBackup {
-        let result = try JSONDecoder().decode(LibraryBackup.self, from: Data(contentsOf: url))
+        try decode(Data(contentsOf: url))
+    }
+
+    /// Reads either format: 2 (binary property list) or 1 (JSON, from older versions).
+    static func decode(_ data: Data) throws -> LibraryBackup {
+        let result = BackupFile.isBackupFile(data)
+            ? try BackupFile.decode(data).restored()
+            : try JSONDecoder().decode(LibraryBackup.self, from: data)
         try result.validate()
         return result
     }
@@ -65,9 +74,7 @@ struct LibraryBackup: Codable, Sendable {
     /// without freezing the app.
     static func load(from url: URL) async throws -> LibraryBackup {
         try await Task.detached(priority: .userInitiated) {
-            let result = try JSONDecoder().decode(LibraryBackup.self, from: FolderSync.coordinatedRead(url))
-            try result.validate()
-            return result
+            try decode(FolderSync.coordinatedRead(url))
         }.value
     }
 

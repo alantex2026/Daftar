@@ -91,8 +91,16 @@ enum LibraryActions {
         return copy
     }
 
+    /// Moves `page` up one level, directly after its former parent, and
+    /// renumbers its new siblings so the order stays unambiguous.
     static func moveOut(_ page: Page) {
-        page.parent = page.parent?.parent
+        guard let oldParent = page.parent else { return }
+        let newParent = oldParent.parent
+        var siblings = (newParent?.sortedChildren ?? page.section?.rootPages ?? []).filter { $0 !== page }
+        page.parent = newParent
+        let index = siblings.firstIndex { $0 === oldParent }.map { $0 + 1 } ?? siblings.count
+        siblings.insert(page, at: index)
+        for (position, item) in siblings.enumerated() { item.sortIndex = position }
     }
 
     // MARK: - Reordering
@@ -128,6 +136,44 @@ enum LibraryActions {
         guard dragged.parent === target.parent, dragged.section === target.section else { return }
         reorder(target.parent?.sortedChildren ?? target.section?.rootPages ?? [],
                 moving: dragged, to: target, sortIndex: \.sortIndex)
+    }
+
+    // MARK: - Moving pages anywhere
+
+    /// Moves `page` and its sub-pages to the end of `section`'s top level.
+    static func move(_ page: Page, to section: NoteSection) {
+        guard !section.isGroup else { return }
+        let index = section.nextRootPageIndex
+        page.parent = nil
+        page.reassignSection(section)
+        page.sortIndex = index
+    }
+
+    /// Makes `page` the last sub-page of `parent`, in whichever section
+    /// `parent` is. Refuses to put a page inside itself or its own sub-pages.
+    @discardableResult
+    static func nest(_ page: Page, under parent: Page) -> Bool {
+        guard parent !== page, !parent.isWithin(page), let section = parent.section else { return false }
+        let index = parent.nextChildIndex
+        page.parent = parent
+        page.reassignSection(section)
+        page.sortIndex = index
+        parent.isExpanded = true
+        return true
+    }
+
+    /// Places `page` directly before (or after) `target` among `target`'s
+    /// siblings - in any section or under any parent - and renumbers them.
+    @discardableResult
+    static func place(_ page: Page, beside target: Page, after: Bool = false) -> Bool {
+        guard page !== target, !target.isWithin(page), let section = target.section else { return false }
+        var siblings = (target.parent?.sortedChildren ?? section.rootPages).filter { $0 !== page }
+        page.parent = target.parent
+        page.reassignSection(section)
+        let targetIndex = siblings.firstIndex { $0 === target } ?? siblings.count
+        siblings.insert(page, at: min(siblings.count, targetIndex + (after ? 1 : 0)))
+        for (position, item) in siblings.enumerated() { item.sortIndex = position }
+        return true
     }
 
     // MARK: - Trash
@@ -176,6 +222,13 @@ extension NoteSection {
 }
 
 extension Page {
+    /// Moves this page and every sub-page - trashed ones included, so they
+    /// restore to the right place - into `section`.
+    func reassignSection(_ section: NoteSection) {
+        if self.section !== section { self.section = section }
+        for child in children { child.reassignSection(section) }
+    }
+
     /// True if this is `ancestor` itself or nested anywhere inside it.
     func isWithin(_ ancestor: Page) -> Bool {
         var current: Page? = self

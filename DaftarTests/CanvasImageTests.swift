@@ -310,7 +310,7 @@ final class CanvasImageTests: XCTestCase {
         let range = (restored.string as NSString).range(of: "Canvas note")
         XCTAssertNotEqual(range.location, NSNotFound)
         let paragraph = try XCTUnwrap(restored.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)
-        XCTAssertEqual(paragraph.headIndent, 250 - tv.textContainerOrigin.x, accuracy: 1)
+        XCTAssertEqual(paragraph.headIndent, 250 - tv.textContainerOrigin.x - tv.textContainer!.lineFragmentPadding, accuracy: 1)
         tv.layoutManager!.ensureLayout(for: tv.textContainer!)
         let rect = tv.layoutManager!.boundingRect(forGlyphRange: tv.layoutManager!.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: tv.textContainer!)
         XCTAssertEqual(rect.minX + tv.textContainerOrigin.x, 250, accuracy: 8)
@@ -351,6 +351,98 @@ final class CanvasImageTests: XCTestCase {
         tv.allowsCanvasTyping = true; tv.isEditable = false
         XCTAssertFalse(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 100, y: 300)))
         XCTAssertEqual(tv.string, original)
+        withExtendedLifetime(controller) {}
+    }
+
+    // MARK: - Pending canvas caret
+
+    private func canvasHarness(_ text: String) -> (EditorController, DaftarTextView) {
+        let (controller, tv, _) = harness()
+        tv.allowsCanvasTyping = true
+        tv.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: [.font: EditorController.defaultFont]))
+        tv.layoutManager!.ensureLayout(for: tv.textContainer!)
+        tv.undoManager?.removeAllActions()
+        return (controller, tv)
+    }
+
+    func testClickOnCanvasDoesNotChangeNoteUntilTyping() throws {
+        let (controller, tv) = canvasHarness("Line one")
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 200, y: 400)))
+        XCTAssertEqual(tv.string, "Line one")
+        XCTAssertFalse(tv.undoManager?.canUndo ?? false)
+        // The caret is drawn exactly at the click, not one padding to the right.
+        XCTAssertEqual(try XCTUnwrap(tv.pendingCanvasCaretRect).minX, 200, accuracy: 1)
+        tv.insertText("Typed", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(tv.string.hasPrefix("Line one\n"))
+        XCTAssertTrue(tv.string.hasSuffix("Typed"))
+        let range = (tv.string as NSString).range(of: "Typed")
+        tv.layoutManager!.ensureLayout(for: tv.textContainer!)
+        let rect = tv.layoutManager!.boundingRect(forGlyphRange: tv.layoutManager!.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: tv.textContainer!)
+        XCTAssertEqual(rect.minX + tv.textContainerOrigin.x, 200, accuracy: 2)
+        withExtendedLifetime(controller) {}
+    }
+
+    func testRepeatedClicksRightOfLineAddOnlyOneTab() {
+        let (controller, tv) = canvasHarness("Left")
+        let point = NSPoint(x: 320, y: tv.textContainerOrigin.y + 5)
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: point))
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: point))
+        XCTAssertEqual(tv.string, "Left")
+        tv.insertText("Right", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(tv.string, "Left\tRight")
+        withExtendedLifetime(controller) {}
+    }
+
+    func testAbandonedCanvasClickLeavesNoteUntouched() {
+        let (controller, tv) = canvasHarness("Line one\n\nLine three")
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 300, y: 500)))
+        tv.setSelectedRange(NSRange(location: 2, length: 0))
+        XCTAssertNil(tv.pendingCanvasPlacement)
+        tv.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(tv.string, "Lixne one\n\nLine three")
+        if tv.window?.firstResponder === tv {
+            XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 300, y: 500)))
+            tv.window?.makeFirstResponder(nil)
+            XCTAssertNil(tv.pendingCanvasPlacement)
+        }
+        XCTAssertEqual(tv.string, "Lixne one\n\nLine three")
+        withExtendedLifetime(controller) {}
+    }
+
+    func testClickOnEmptyLineAfterFinalLineBreakUsesClickedPosition() throws {
+        let (controller, tv) = canvasHarness("Text\n")
+        let lm = tv.layoutManager!
+        XCTAssertTrue(lm.extraLineFragmentTextContainer === tv.textContainer)
+        let y = lm.extraLineFragmentRect.midY + tv.textContainerOrigin.y
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 200, y: y)))
+        tv.insertText("A", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(tv.string, "Text\nA")
+        let style = try XCTUnwrap(tv.textStorage?.attribute(.paragraphStyle, at: 5, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.headIndent, 200 - tv.textContainerOrigin.x - tv.textContainer!.lineFragmentPadding, accuracy: 1)
+        withExtendedLifetime(controller) {}
+    }
+
+    func testClickNearLeftEdgeOfBlankLineAddsNoIndent() {
+        let (controller, tv) = canvasHarness("A\n\nB")
+        let lm = tv.layoutManager!
+        let blank = lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: 2), effectiveRange: nil)
+        let x = tv.textContainerOrigin.x + tv.textContainer!.lineFragmentPadding + 4
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: x, y: blank.midY + tv.textContainerOrigin.y)))
+        tv.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(tv.string, "A\nx\nB")
+        let style = tv.textStorage?.attribute(.paragraphStyle, at: 2, effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertEqual(style?.headIndent ?? 0, 0)
+        withExtendedLifetime(controller) {}
+    }
+
+    func testArrowKeysMovePendingCaretWithoutEditing() throws {
+        let (controller, tv) = canvasHarness("Line one")
+        XCTAssertTrue(tv.placeInsertionPointOnCanvas(at: NSPoint(x: 200, y: 400)))
+        let before = try XCTUnwrap(tv.pendingCanvasCaretRect).minX
+        XCTAssertTrue(tv.nudgeCanvasCaret(forward: true, large: true))
+        XCTAssertGreaterThan(try XCTUnwrap(tv.pendingCanvasCaretRect).minX, before)
+        XCTAssertEqual(tv.string, "Line one")
+        XCTAssertFalse(tv.undoManager?.canUndo ?? false)
         withExtendedLifetime(controller) {}
     }
 

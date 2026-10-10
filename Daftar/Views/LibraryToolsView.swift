@@ -16,12 +16,14 @@ struct LibraryToolsView: View {
             Button(restoring ? "Restoring…" : "Restore Library Backup…") { restore() }.disabled(restoring)
             Divider()
             if sync.enabled {
-                Button("Sync Now") { authorize { sync.syncNow() } }.disabled(sync.busy)
+                // Asks for Touch ID at most once per launch, and never
+                // unlocks locked sections on screen.
+                Button("Sync Now") { sync.authorizeAndSync() }.disabled(sync.busy)
                 Text(sync.status)
                 if let last = sync.lastSync { Text("Last sync: \(last.formatted())") }
                 Button("Turn Off Folder Sync") { sync.disable() }
             } else {
-                Button("Set Up Folder Sync…") { authorize { chooseSyncFolder() } }
+                Button("Set Up Folder Sync…") { chooseSyncFolder() }
             }
             Button("Show Recovery Backups") {
                 do {
@@ -34,6 +36,7 @@ struct LibraryToolsView: View {
                 .symbolRenderingMode(.multicolor)
         }
         .help(sync.enabled && sync.needsAttention ? sync.status : "Library backup, restore, and device sync")
+        .accessibilityLabel(Text("Library Backup and Sync"))
         .alert("Library", isPresented: Binding(get: { errorMessage != nil || notice != nil }, set: { if !$0 { errorMessage = nil; notice = nil } })) {
             Button("OK") {}
         } message: { Text(errorMessage ?? notice ?? "") }
@@ -49,8 +52,16 @@ struct LibraryToolsView: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "Daftar-\(Date().formatted(.iso8601.year().month().day())).daftarbackup"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try LibraryBackup.capture(context: context, locks: locks).write(to: url); notice = "Your complete library was backed up, including Trash and page history." }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            // Capturing reads the models (main thread); packing and writing don't.
+            let backup = try LibraryBackup.capture(context: context, locks: locks, includeHistory: false)
+            Task {
+                do {
+                    try await Task.detached(priority: .userInitiated) { try backup.write(to: url) }.value
+                    notice = "Your library was backed up, including Trash. Page history isn't included."
+                } catch { errorMessage = error.localizedDescription }
+            }
+        } catch { errorMessage = error.localizedDescription }
     }
     private func restore() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false
@@ -71,7 +82,7 @@ struct LibraryToolsView: View {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
         panel.message = "Choose the same private iCloud Drive or other synced folder on each Mac. Notes and attachments will be stored there unencrypted. Concurrent edits are kept as conflict copies."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try sync.chooseFolder(url); sync.syncNow() }
+        do { try sync.chooseFolder(url); sync.authorizeAndSync() }
         catch { errorMessage = error.localizedDescription }
     }
 }

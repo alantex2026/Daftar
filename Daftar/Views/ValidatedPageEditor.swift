@@ -7,9 +7,36 @@ struct ValidatedPageEditor: View {
     let page: Page
     @ObservedObject var editor: EditorController
     @Environment(\.modelContext) private var context
-    @State private var validated = false
+    @State private var validated: Bool
     @State private var editorGeneration = UUID()
     @State private var loadError: String?
+
+    /// Validated synchronously so a page opens in a single render pass. A
+    /// `.task` here meant every page switch drew a spinner frame first.
+    init(page: Page, editor: EditorController) {
+        self.page = page
+        self.editor = editor
+        let problem = Self.validationProblem(page)
+        _loadError = State(initialValue: problem)
+        _validated = State(initialValue: problem == nil)
+    }
+
+    /// Pages already known to decode, keyed by their last-changed date: every
+    /// content change bumps `updatedAt`, and the parent re-creates this view
+    /// (re-running `init`) on any selection change.
+    private static var validatedVersions: [PersistentIdentifier: Date] = [:]
+
+    private static func validationProblem(_ page: Page) -> String? {
+        if validatedVersions[page.persistentModelID] == page.updatedAt { return nil }
+        do {
+            try PageContentCodec.validate(page)
+            validatedVersions[page.persistentModelID] = page.updatedAt
+            return nil
+        } catch {
+            validatedVersions[page.persistentModelID] = nil
+            return error.localizedDescription
+        }
+    }
     @State private var confirmReset = false
     @State private var recoveryError: String?
 
@@ -42,7 +69,6 @@ struct ValidatedPageEditor: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task { validate() }
         .onReceive(NotificationCenter.default.publisher(for: .daftarReloadEditors)) { note in
             // `object` is the set of changed page IDs (sync), or nil for "all".
             guard page.modelContext != nil, !page.isDeleted else { return }
@@ -61,14 +87,14 @@ struct ValidatedPageEditor: View {
     }
 
     private func validate() {
-        do {
-            try PageContentCodec.validate(page)
-            loadError = nil
-            validated = true
-        } catch {
-            loadError = error.localizedDescription
+        Self.validatedVersions[page.persistentModelID] = nil  // an explicit retry always re-checks
+        if let problem = Self.validationProblem(page) {
+            loadError = problem
             validated = false
             editor.textView = nil
+        } else {
+            loadError = nil
+            validated = true
         }
     }
 

@@ -11,6 +11,7 @@ struct PageOutlineView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.layoutDirection) private var layoutDirection
     @EnvironmentObject private var sectionLock: SectionLockStore
+    @EnvironmentObject private var undoToast: UndoToast
     @Query private var allNotebooks: [Notebook]
     /// Pages searched while search is active. Not an @Query: this view is always
     /// visible, and a query over every page would refetch on each autosave.
@@ -22,7 +23,7 @@ struct PageOutlineView: View {
 
     @State private var renamingID: PersistentIdentifier?
     @State private var draftName = ""
-    @State private var draggedPage: Page?
+    @State private var dropTarget: (page: Page, zone: PageDropZone)?
 
     // Search: filtering runs against `debouncedQuery` instead of `searchText`
     // directly, so a fast typist isn't re-filtering every page on every
@@ -113,8 +114,7 @@ struct PageOutlineView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .keyboardShortcut("n", modifiers: .command)
-            .help("Create a blank page in this section")
+            .help("Create a blank page in this section (Cmd N)")
 
             Menu {
                 ForEach(PageTemplate.allCases.filter { $0 != .blank }) { template in
@@ -138,11 +138,21 @@ struct PageOutlineView: View {
                     .foregroundStyle(AppTheme.sidebarText)
             }
             .menuStyle(.borderlessButton)
+            // The label already is the chevron; without this macOS adds a second one.
+            .menuIndicator(.hidden)
             .fixedSize()
             .padding(.trailing, 14)
             .help("New page from template")
+            .accessibilityLabel(Text("New Page from Template"))
         }
-        .disabled(section == nil || section?.isGroup == true || section.map { !sectionLock.isUnlocked($0) } == true)
+        .disabled(!canAddPage)
+        // File > New Page (Cmd N) acts on this window's current section.
+        .focusedSceneValue(\.newPageAction, canAddPage ? NewPageAction { addPage(under: nil) } : nil)
+    }
+
+    private var canAddPage: Bool {
+        guard let section else { return false }
+        return !section.isGroup && sectionLock.isUnlocked(section)
     }
 
     private func lockedPlaceholder(_ section: NoteSection) -> some View {
@@ -187,6 +197,7 @@ struct PageOutlineView: View {
                             .foregroundStyle(AppTheme.sidebarLabel)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(page.isExpanded ? "Collapse Sub-pages" : "Expand Sub-pages"))
                 } else {
                     Color.clear
                 }
@@ -224,10 +235,10 @@ struct PageOutlineView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 5)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(selectedPage === page ? AppTheme.pageCardOn : AppTheme.pageCard)
             )
-            .animation(.easeInOut(duration: 0.15), value: selectedPage)
+            .overlay { dropIndicator(for: page) }
             .padding(.leading, CGFloat(depth) * 20)
             .contentShape(Rectangle())
             .onSingleAndDoubleTap(single: { selectedPage = page; isFocused = true }, double: {
@@ -238,17 +249,38 @@ struct PageOutlineView: View {
             })
             .contextMenu { pageMenu(page) }
             .onDrag {
-                draggedPage = page
-                return NSItemProvider(item: NSString(string: page.title), typeIdentifier: UTType.daftarPage.identifier)
+                PageDrag.current = page
+                return NSItemProvider(item: NSString(string: page.linkID.uuidString), typeIdentifier: UTType.daftarPage.identifier)
             }
-            .onDrop(of: [UTType.daftarPage], isTargeted: nil) { _ in
-                guard let dragged = draggedPage else { return false }
-                reorderPages(dragged: dragged, target: page)
-                draggedPage = nil
-                return true
-            }
+            .onDrop(of: [UTType.daftarPage], delegate: PageRowDropDelegate(target: page, indicator: $dropTarget) { dragged, zone in
+                dropPage(dragged, on: page, zone: zone)
+            })
         }
         .padding(.trailing, 0)
+    }
+
+    /// A line above or below the card, or an outline around it, showing
+    /// where a dragged page will land.
+    @ViewBuilder
+    private func dropIndicator(for page: Page) -> some View {
+        if let target = dropTarget, target.page === page {
+            switch target.zone {
+            case .before:
+                VStack { AppTheme.controlAccent.frame(height: 2); Spacer() }.offset(y: -2)
+            case .after:
+                VStack { Spacer(); AppTheme.controlAccent.frame(height: 2) }.offset(y: 2)
+            case .inside:
+                RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(AppTheme.controlAccent, lineWidth: 2)
+            }
+        }
+    }
+
+    private func dropPage(_ dragged: Page, on target: Page, zone: PageDropZone) -> Bool {
+        switch zone {
+        case .before: return LibraryActions.place(dragged, beside: target)
+        case .after: return LibraryActions.place(dragged, beside: target, after: true)
+        case .inside: return LibraryActions.nest(dragged, under: target)
+        }
     }
 
     // MARK: Search results
@@ -281,6 +313,7 @@ struct PageOutlineView: View {
             Spacer()
             Button { searchName = searchText; showSaveSearch = true } label: { Image(systemName: "bookmark") }
                 .help("Save current search and filters")
+                .accessibilityLabel(Text("Save Search"))
         }
         .padding(.horizontal, 14).padding(.vertical, 6)
         .alert("Save Search", isPresented: $showSaveSearch) {
@@ -341,7 +374,7 @@ struct PageOutlineView: View {
             }.menuStyle(.borderlessButton)
             Button { showSearchResults = false; searchText = ""; filterNotebook = nil; filterTag = nil; customTag = nil } label: {
                 Image(systemName: "xmark.circle")
-            }.buttonStyle(.plain).help("Clear search filters")
+            }.buttonStyle(.plain).help("Clear search filters").accessibilityLabel(Text("Clear Search Filters"))
             Spacer()
         }
         .font(.system(size: 12))
@@ -363,9 +396,9 @@ struct PageOutlineView: View {
             if let filterNotebook, page.section?.notebook !== filterNotebook { return false }
             if let filterTag, page.tag != filterTag { return false }
             if let customTag, !page.customTags.contains(customTag) { return false }
-            return debouncedQuery.isEmpty || page.title.localizedCaseInsensitiveContains(debouncedQuery)
-                || page.plainText.localizedCaseInsensitiveContains(debouncedQuery)
-                || page.customTags.contains { $0.localizedCaseInsensitiveContains(debouncedQuery) }
+            return debouncedQuery.isEmpty || SearchText.matches(page.title, debouncedQuery)
+                || SearchText.matches(page.plainText, debouncedQuery)
+                || page.customTags.contains { SearchText.matches($0, debouncedQuery) }
         }
     }
 
@@ -393,13 +426,16 @@ struct PageOutlineView: View {
                     .padding(.vertical, 9)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 5)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(selectedPage === page ? AppTheme.pageCardOn : AppTheme.pageCard)
                     )
-                    .animation(.easeInOut(duration: 0.15), value: selectedPage)
                     .padding(.leading, 18)
                     .contentShape(Rectangle())
-                    .onTapGesture { selectedPage = page; isFocused = true }
+                    .onTapGesture {
+                        SearchHighlight.request(debouncedQuery, for: page.linkID)
+                        selectedPage = page
+                        isFocused = true
+                    }
                 }
                 Color.clear.frame(height: 12)
             }
@@ -416,8 +452,7 @@ struct PageOutlineView: View {
 
     private func snippet(for page: Page) -> String? {
         let text = page.plainText
-        guard !debouncedQuery.isEmpty,
-              let range = text.range(of: debouncedQuery, options: .caseInsensitive) else { return nil }
+        guard let range = SearchText.range(of: debouncedQuery, in: text) else { return nil }
         let radius = 40
         let start = text.index(range.lowerBound, offsetBy: -radius, limitedBy: text.startIndex) ?? text.startIndex
         let end = text.index(range.upperBound, offsetBy: radius, limitedBy: text.endIndex) ?? text.endIndex
@@ -491,9 +526,23 @@ struct PageOutlineView: View {
         if page.parent != nil {
             Button("Move Out One Level") { moveOut(page) }
         }
+        Menu("Move to") {
+            ForEach(allNotebooks.filter { !$0.isTrashed }.sorted { $0.sortIndex < $1.sortIndex }) { notebook in
+                Section(notebook.name) {
+                    ForEach(pageSections(in: notebook), id: \.section.persistentModelID) { entry in
+                        Button(entry.title) { movePage(page, to: entry.section) }
+                            .disabled(entry.section === page.section && page.parent == nil)
+                    }
+                }
+            }
+        }
         Button("Delete Page", role: .destructive) {
             if let selectedPage, selectedPage.isWithin(page) { self.selectedPage = nil }
             LibraryActions.trash(page)
+            undoToast.trashed(page.displayTitle) {
+                LibraryActions.restore(page)
+                selectedPage = page
+            }
         }
     }
 
@@ -511,7 +560,68 @@ struct PageOutlineView: View {
         LibraryActions.moveOut(page)
     }
 
-    private func reorderPages(dragged: Page, target: Page) {
-        LibraryActions.reorderPages(moving: dragged, to: target)
+    private func movePage(_ page: Page, to section: NoteSection) {
+        sectionLock.requestUnlock(section, reason: "move this page to \u{201C}\(section.name)\u{201D}") { success in
+            if success { LibraryActions.move(page, to: section) }
+        }
+    }
+
+    /// Every section a page can live in (not groups, not trashed), with its
+    /// path inside the notebook, for the "Move to" menu.
+    private func pageSections(in notebook: Notebook) -> [(section: NoteSection, title: String)] {
+        var result: [(NoteSection, String)] = []
+        func add(_ sections: [NoteSection], prefix: String) {
+            for section in sections {
+                if section.isGroup { add(section.sortedChildren, prefix: prefix + section.name + " \u{203A} ") }
+                else { result.append((section, prefix + section.name)) }
+            }
+        }
+        add(notebook.topLevelSections, prefix: "")
+        return result
+    }
+}
+
+/// Where a page dropped on another page lands.
+enum PageDropZone: Equatable {
+    case before, inside, after
+
+    /// Top and bottom edges place the page beside the row; the middle nests it.
+    static func zone(atY y: CGFloat, rowHeight: CGFloat) -> PageDropZone {
+        let edge = min(12, rowHeight / 3)
+        if y < edge { return .before }
+        if y > rowHeight - edge { return .after }
+        return .inside
+    }
+}
+
+private struct PageRowDropDelegate: DropDelegate {
+    let target: Page
+    @Binding var indicator: (page: Page, zone: PageDropZone)?
+    let perform: (Page, PageDropZone) -> Bool
+    /// The page cards are one line tall: 10pt padding around a 15pt title.
+    private let rowHeight: CGFloat = 39
+
+    private func zone(_ info: DropInfo) -> PageDropZone {
+        PageDropZone.zone(atY: info.location.y, rowHeight: rowHeight)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let page = PageDrag.current else { return false }
+        return page !== target && !target.isWithin(page)  // never into itself
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        indicator = (target, zone(info))
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if indicator?.page === target { indicator = nil }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { indicator = nil; PageDrag.current = nil }
+        guard let page = PageDrag.current else { return false }
+        return perform(page, zone(info))
     }
 }

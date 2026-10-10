@@ -39,6 +39,8 @@ struct BarToggle: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(Text(help))
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 
@@ -58,6 +60,7 @@ private struct BarButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(Color.primary)
         .help(help)
+        .accessibilityLabel(Text(help))
     }
 }
 
@@ -81,6 +84,7 @@ private struct BarMenu<MenuContent: View>: View {
         .menuIndicator(.hidden)
         .frame(width: barControlSize.width, height: barControlSize.height)
         .help(help)
+        .accessibilityLabel(Text(help))
     }
 }
 
@@ -168,6 +172,7 @@ struct FontFormatGroup: View {
             }
             .frame(width: 44, height: barControlSize.height)
             .help("Font size")
+            .accessibilityLabel(Text("Font size"))
 
             BarDivider()
 
@@ -303,15 +308,16 @@ private struct TableOfContentsPopover: View {
 
 // MARK: - Tags
 
+/// The one tag control: the built-in tags plus the page's custom tags.
 struct TagBar: View {
     @ObservedObject var editor: EditorController
     var page: Page?
+    @State private var showCustomTags = false
 
     var body: some View {
-        // A single Menu instead of three quick-tap buttons plus a chevron -
-        // narrower, and (unlike a bare row of buttons) a Menu still nests
-        // cleanly as a submenu if the toolbar overflows and this item has
-        // to move into macOS's own ">>" overflow menu.
+        // A single Menu instead of a row of buttons - narrower, and (unlike
+        // a bare row of buttons) a Menu still nests cleanly as a submenu if
+        // the toolbar overflows into macOS's own ">>" overflow menu.
         Menu {
             ForEach(PageTag.allCases) { tag in
                 Button {
@@ -320,12 +326,20 @@ struct TagBar: View {
                     Label(tag.title, systemImage: tag.symbol)
                 }
             }
+            Divider()
+            if let page, !page.customTags.isEmpty {
+                Section("Custom Tags") {
+                    ForEach(page.customTags, id: \.self) { Text($0) }
+                }
+            }
+            Button("Custom Tags\u{2026}") { showCustomTags = true }
         } label: {
             Group {
                 if let page, page.tag != .none {
                     TagBadge(tag: page.tag, size: 18)
                 } else {
-                    Image(systemName: "tag").font(barIconFont).foregroundStyle(Color.primary)
+                    Image(systemName: page?.customTags.isEmpty == false ? "tag.fill" : "tag")
+                        .font(barIconFont).foregroundStyle(Color.primary)
                 }
             }
             .frame(width: barControlSize.width, height: barControlSize.height)
@@ -334,7 +348,11 @@ struct TagBar: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(page == nil)
-        .help("Choose a tag")
+        .help("Tags")
+        .accessibilityLabel(Text("Tags"))
+        .popover(isPresented: $showCustomTags, arrowEdge: .bottom) {
+            if let page { CustomTagsEditor(page: page) }
+        }
     }
 }
 
@@ -366,6 +384,7 @@ struct InsertMenu: View {
             Image(systemName: "plus").font(.system(size: 15, weight: .medium))
         }
         .help("Insert into page")
+        .accessibilityLabel(Text("Insert"))
         .popover(isPresented: $showLinkPicker, arrowEdge: .bottom) {
             PageLinkPicker(editor: editor, currentPage: page, dismiss: { showLinkPicker = false })
         }
@@ -409,7 +428,7 @@ private struct PageLinkPicker: View {
 
     private var candidates: [Page] {
         allPages.filter { !$0.isTrashed && $0 !== currentPage && sectionLock.canShow($0) }
-            .filter { query.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(query) }
+            .filter { query.isEmpty || SearchText.matches($0.displayTitle, query) }
             .sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
     }
 
@@ -576,6 +595,7 @@ struct ShareMenu: View {
             Divider()
             Button("Find in Page...") { editor.showFindBar() }
             Divider()
+            Button("Print\u{2026}") { editor.printPage() }
             Button("Export as PDF...") { exportPDF() }
             Button("Export as RTF...") { exportRTF() }
             Divider()
@@ -587,6 +607,7 @@ struct ShareMenu: View {
             Image(systemName: "square.and.arrow.up")
         }
         .help("Export or share this page")
+        .accessibilityLabel(Text("Share and Export"))
     }
 
     /// The system share sheet (AirDrop, Mail, Messages, and any installed

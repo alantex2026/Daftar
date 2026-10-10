@@ -30,7 +30,18 @@ final class ImageCanvas {
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard let attachment = value as? NSTextAttachment,
                   EditorController.isImageAttachment(attachment, at: range.location, in: storage) else { return }
-            let layout = CanvasImageLayout(link: storage.attribute(.link, at: range.location, effectiveRange: nil))
+            let link = storage.attribute(.link, at: range.location, effectiveRange: nil)
+            let layout = CanvasImageLayout(link: link)
+            // Inline pictures: show them at their saved size (opened pages, undo).
+            if layout == nil {
+                var changed = false
+                if let size = InlineImageSize.size(from: link) {
+                    if InlineImageSize.needsCell(attachment, size: size) { InlineImageSize.applyCell(to: attachment, size: size); changed = true }
+                } else {
+                    changed = InlineImageSize.resetIfUnsized(attachment)
+                }
+                if changed { storage.layoutManagers.forEach { $0.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil) } }
+            }
             let isSelected = selected == range
             guard layout != nil || isSelected, let wrapper = attachment.fileWrapper else { return }
             let wrapperID = ObjectIdentifier(wrapper)
@@ -74,7 +85,8 @@ final class ImageCanvas {
         }
         for key in Array(views.keys) where !live.contains(key) { views.removeValue(forKey: key)?.removeFromSuperview() }
         imageCache = imageCache.filter { liveWrappers.contains($0.key) }
-        for tv in textViews() where CanvasImageLayout(link: tv.typingAttributes[.link]) != nil {
+        // Text typed after a picture must not inherit its size/position link.
+        for tv in textViews() where DaftarLink(tv.typingAttributes[.link]) == .image {
             var attributes = tv.typingAttributes
             attributes.removeValue(forKey: .link)
             tv.typingAttributes = attributes
@@ -118,7 +130,13 @@ final class ImageCanvas {
     func returnToText(range: NSRange) {
         guard canEdit, NSMaxRange(range) <= storage.length else { return }
         let content = NSMutableAttributedString(attributedString: CanvasImageLayout.portable(storage.attributedSubstring(from: range)))
-        content.removeAttribute(.link, range: NSRange(location: 0, length: content.length))
+        let full = NSRange(location: 0, length: content.length)
+        // Keep the size it had on the canvas.
+        if let size = CanvasImageLayout(link: content.attribute(.link, at: 0, effectiveRange: nil))?.rect.size {
+            content.addAttribute(.link, value: InlineImageSize.url(for: size), range: full)
+        } else {
+            content.removeAttribute(.link, range: full)
+        }
         replace(range: range, with: content, action: "Place Image in Text")
     }
 
@@ -180,12 +198,12 @@ final class ImageResizeHandlesView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         if isFloating { picture?.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
         guard isSelected, NSGraphicsContext.current?.isDrawingToScreen != false else { return }
-        NSColor.controlAccentColor.setStroke()
+        AppTheme.nsAccent.setStroke()
         let outline = NSBezierPath(rect: imageRect); outline.lineWidth = 1; outline.stroke()
         for handle in CanvasImageLayout.Handle.allCases {
             let rect = handleRect(handle)
             NSColor.white.setFill(); NSBezierPath(rect: rect).fill()
-            NSColor.controlAccentColor.setStroke(); NSBezierPath(rect: rect).stroke()
+            AppTheme.nsAccent.setStroke(); NSBezierPath(rect: rect).stroke()
         }
     }
 

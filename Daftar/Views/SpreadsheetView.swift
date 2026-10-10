@@ -64,7 +64,7 @@ struct SpreadsheetPaperView: View {
             editingCell = nil
             if let cell {
                 rangeText = cell
-                if let ref = CellReference.parse(cell) { SessionStore.saveCursor(ref.row * SpreadsheetData.maxColumns + ref.column, id: page.linkID) }
+                if let ref = CellReference.parse(cell) { SessionStore.rememberCursor(ref.row * SpreadsheetData.maxColumns + ref.column, id: page.linkID) }
             }
         }
         .alert("Spreadsheet", isPresented: Binding(get: { sheetError != nil }, set: { if !$0 { sheetError = nil } })) {
@@ -88,8 +88,8 @@ struct SpreadsheetPaperView: View {
                 Button("Import CSV…") { importCSV() }
                 Button("Export CSV…") { exportCSV() }
             }.fixedSize()
-            Button { undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(undoStack.isEmpty).help("Undo spreadsheet edit")
-            Button { redo() } label: { Image(systemName: "arrow.uturn.forward") }.disabled(redoStack.isEmpty).help("Redo spreadsheet edit")
+            Button { undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(undoStack.isEmpty).help("Undo spreadsheet edit").accessibilityLabel(Text("Undo"))
+            Button { redo() } label: { Image(systemName: "arrow.uturn.forward") }.disabled(redoStack.isEmpty).help("Redo spreadsheet edit").accessibilityLabel(Text("Redo"))
             TextField("Range (A1:C5)", text: $rangeText).frame(width: 110)
             Button("Copy Range") {
                 perform {
@@ -160,6 +160,7 @@ struct SpreadsheetPaperView: View {
                 Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 11))
             }
             .help("Full screen")
+            .accessibilityLabel(Text("Full Screen"))
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 16)
@@ -201,7 +202,7 @@ struct SpreadsheetPaperView: View {
                           onNavigate: { moveFocus(fromRow: row, column: column, direction: $0) })
             .padding(.horizontal, 6)
             .frame(width: cellWidth, height: cellHeight, alignment: .leading)
-            .background(focusedCell == ref ? Color.accentColor.opacity(0.1) : Color.clear)
+            .background(focusedCell == ref ? AppTheme.controlAccent.opacity(0.1) : Color.clear)
             .overlay(Rectangle().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
     }
 
@@ -245,7 +246,7 @@ struct SpreadsheetPaperView: View {
     private func load() {
         do {
             data = try PageContentCodec.spreadsheet(page.spreadsheetData)
-            let cursor = SessionStore.cursor(page.linkID)
+            let cursor = SessionStore.latestCursor(page.linkID)
             focusedCell = CellReference.name(row: min(cursor / SpreadsheetData.maxColumns, data.rows - 1),
                                              column: min(cursor % SpreadsheetData.maxColumns, data.columns - 1))
             loadFailed = false

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        SessionStore.flushCursors()
         guard SaveCoordinator.flushAll() else { return askToQuitWithUnsavedChanges() }
         return .terminateNow
     }

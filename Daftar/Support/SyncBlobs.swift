@@ -137,6 +137,15 @@ extension NotebookArchive {
         }
     }
 
+    /// The same notebook with every page's history left out.
+    var withoutHistory: NotebookArchive {
+        mappingPages { page in
+            page.historyData = nil
+            page.history = nil
+            page.historyBlob = nil
+        }
+    }
+
     /// True when any payload was moved out to a blob file.
     var hasBlobReferences: Bool { !SyncBlobs.references(self).isEmpty }
 

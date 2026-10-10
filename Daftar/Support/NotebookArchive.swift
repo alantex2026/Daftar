@@ -26,7 +26,7 @@ struct NotebookArchive: Codable, Equatable, Sendable {
         var children: [SectionRecord]
         var pages: [PageRecord]
 
-        init(_ section: NoteSection, includeTrash: Bool = false, structuredHistory: Bool = false) {
+        init(_ section: NoteSection, includeTrash: Bool = false, structuredHistory: Bool = false, includeHistory: Bool = true) {
             stableID = section.stableID; createdAt = section.createdAt
             deletedAt = section.deletedAt; sortIndex = section.sortIndex
             name = section.name
@@ -34,9 +34,9 @@ struct NotebookArchive: Codable, Equatable, Sendable {
             isGroup = section.isGroup
             isLocked = section.isLocked
             children = (includeTrash ? section.children.sorted { ($0.sortIndex, $0.stableID.uuidString) < ($1.sortIndex, $1.stableID.uuidString) } : section.sortedChildren)
-                .map { SectionRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory) }
+                .map { SectionRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory, includeHistory: includeHistory) }
             pages = (includeTrash ? section.pages.filter { $0.parent == nil }.sorted { ($0.sortIndex, $0.linkID.uuidString) < ($1.sortIndex, $1.linkID.uuidString) } : section.rootPages)
-                .map { PageRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory) }
+                .map { PageRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory, includeHistory: includeHistory) }
         }
     }
 
@@ -68,10 +68,14 @@ struct NotebookArchive: Codable, Equatable, Sendable {
         /// `structuredHistory` (sync) takes revisions straight from their rows
         /// into `history` instead of encoding JSON on the main thread; call
         /// `withPortableHistory()` before writing such an archive to a file.
-        init(_ page: Page, includeTrash: Bool = false, structuredHistory: Bool = false) {
+        /// `includeHistory: false` (backups) leaves page history out entirely
+        /// and never loads it.
+        init(_ page: Page, includeTrash: Bool = false, structuredHistory: Bool = false, includeHistory: Bool = true) {
             plainText = page.plainText; outgoingLinkIDs = page.outgoingLinkIDs
             customTags = page.customTags; paperSize = page.paperSize
-            if structuredHistory, let revisions = try? PageHistory.revisions(page) {
+            if !includeHistory {
+                // No history.
+            } else if structuredHistory, let revisions = try? PageHistory.revisions(page) {
                 history = revisions.isEmpty ? nil : revisions.map { SyncRevision(revision: $0) }
             } else {
                 historyData = page.historyData  // Damaged history stays byte-for-byte.
@@ -87,17 +91,17 @@ struct NotebookArchive: Codable, Equatable, Sendable {
             updatedAt = page.updatedAt
             pinnedAt = page.pinnedAt
             children = (includeTrash ? page.children.sorted { ($0.sortIndex, $0.linkID.uuidString) < ($1.sortIndex, $1.linkID.uuidString) } : page.sortedChildren)
-                .map { PageRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory) }
+                .map { PageRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory, includeHistory: includeHistory) }
         }
     }
 
-    init(_ notebook: Notebook, includeTrash: Bool = false, structuredHistory: Bool = false) {
+    init(_ notebook: Notebook, includeTrash: Bool = false, structuredHistory: Bool = false, includeHistory: Bool = true) {
         stableID = notebook.stableID; createdAt = notebook.createdAt
         deletedAt = notebook.deletedAt; sortIndex = notebook.sortIndex
         name = notebook.name
         colorName = notebook.colorName
         sections = (includeTrash ? notebook.sections.filter { $0.parent == nil }.sorted { ($0.sortIndex, $0.stableID.uuidString) < ($1.sortIndex, $1.stableID.uuidString) } : notebook.topLevelSections)
-            .map { SectionRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory) }
+            .map { SectionRecord($0, includeTrash: includeTrash, structuredHistory: structuredHistory, includeHistory: includeHistory) }
     }
 
     var pageIDs: [UUID] {

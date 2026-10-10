@@ -42,11 +42,19 @@ struct SyncEnvelope: Codable, Sendable {
     var deviceID: String
     var records: [String: SyncRecord] = [:]
 
-    /// Moves inline payloads (from version 1 files) into `store`, so every
-    /// comparison and merge works on the same manifest form.
+    /// Every blob hash this envelope's records point at, as written.
+    var references: Set<String> {
+        records.values.compactMap(\.notebook).reduce(into: Set<String>()) { $0.formUnion(SyncBlobs.references($1)) }
+    }
+
+    /// Brings any envelope - older versions carried page history, and version 1
+    /// carried payloads inline - to the form every comparison and merge uses:
+    /// no history (it stays on each Mac) and large payloads moved into `store`.
     mutating func dehydrate(store: inout [String: Data]) {
         for (id, record) in records {
-            if let notebook = record.notebook { records[id]?.notebook = SyncBlobs.dehydrate(notebook, store: &store) }
+            if let notebook = record.notebook {
+                records[id]?.notebook = SyncBlobs.dehydrate(notebook.withoutHistory, store: &store)
+            }
         }
     }
 
@@ -144,6 +152,22 @@ final class FolderSync: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncNow(onlyIfChanged: true) }
         }
+        // Locked sections need one Touch ID check per launch before
+        // background sync can include them; ask up front rather than
+        // leaving sync silently paused.
+        if enabled { authorizeAndSync() }
+    }
+
+    /// Gets this launch's sync permission for locked sections (asking at
+    /// most once), then syncs. Used at launch, by Sync Now and by setup.
+    func authorizeAndSync() {
+        guard enabled, let context, let locks else { return }
+        guard let sections = try? context.fetch(FetchDescriptor<NoteSection>()) else { syncNow(); return }
+        locks.authorizeSync(for: sections) { [weak self] allowed in
+            guard let self else { return }
+            if allowed { self.syncNow() }
+            else { self.status = "Sync paused: confirm with Touch ID or your password, then choose Sync Now."; self.needsAttention = true }
+        }
     }
 
     private func noteSave() { localChanged = true; saveCount += 1 }
@@ -180,7 +204,7 @@ final class FolderSync: ObservableObject {
                 if enabled { lastSync = Date(); status = "Synced with folder"; needsAttention = false }
             } catch is CancellationError { status = enabled ? "Sync cancelled" : "Sync is off" }
             catch LibraryBackup.BackupError.locked {
-                if enabled { status = "Sync paused: unlock protected sections, then choose Sync Now."; needsAttention = true }
+                if enabled { status = "Sync paused: confirm with Touch ID or your password, then choose Sync Now."; needsAttention = true }
             } catch is SyncBlobs.BlobError { if enabled { status = SyncBlobs.BlobError.missing("").localizedDescription } }
             catch SyncError.libraryChanged { if enabled { status = SyncError.libraryChanged.localizedDescription } }
             catch { if enabled { status = error.localizedDescription; needsAttention = true } }
@@ -188,7 +212,7 @@ final class FolderSync: ObservableObject {
     }
 
     func synchronize(folder: URL, context: ModelContext, locks: SectionLockStore, onlyIfChanged: Bool = false) async throws {
-        guard try context.fetch(FetchDescriptor<NoteSection>()).allSatisfy({ locks.isUnlocked($0) }) else {
+        guard locks.canCapture(try context.fetch(FetchDescriptor<NoteSection>()), forSync: true) else {
             throw LibraryBackup.BackupError.locked
         }
         let localDirectory = localDirectory
@@ -203,6 +227,7 @@ final class FolderSync: ObservableObject {
             try FileManager.default.createDirectory(at: localDirectory, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: syncDirectory, withIntermediateDirectories: true)
             var known: [String: Data] = [:]
+            var previouslyPublished = Set<String>(), otherDevicesUse = Set<String>()
             var state: SyncEnvelope
             var stateDigest: String?
             if FileManager.default.fileExists(atPath: stateURL.path) {
@@ -210,6 +235,7 @@ final class FolderSync: ObservableObject {
                 state = try JSONDecoder().decode(SyncEnvelope.self, from: data)
                 try state.validate()
                 stateDigest = Self.digest(data)
+                previouslyPublished = state.references  // before history is stripped
                 state.dehydrate(store: &known)
             } else { state = SyncEnvelope(deviceID: UUID().uuidString) }
             let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
@@ -224,10 +250,14 @@ final class FolderSync: ObservableObject {
             let remotes = try files.map { file in
                 var value = try JSONDecoder().decode(SyncEnvelope.self, from: Self.coordinatedRead(file))
                 try value.validate()
-                value.dehydrate(store: &known)  // Files from before blob storage carry payloads inline.
+                // As written: another Mac on an older build may still use history blobs.
+                if value.deviceID == state.deviceID { previouslyPublished.formUnion(value.references) }
+                else { otherDevicesUse.formUnion(value.references) }
+                value.dehydrate(store: &known)
                 return value
             }
-            return Loaded(state: state, stateDigest: stateDigest, remotes: remotes, signature: signature, known: known)
+            return Loaded(state: state, stateDigest: stateDigest, remotes: remotes, signature: signature, known: known,
+                          previouslyPublished: previouslyPublished, otherDevicesUse: otherDevicesUse)
         }.value
         try Task.checkCancellation()
         guard let loaded else { return }
@@ -235,7 +265,9 @@ final class FolderSync: ObservableObject {
         // A failed sync must not let the timer skip these edits next time.
         defer { if !finished { localChanged = true } }
         // Structured history: no main-thread JSON encoding of every page's revisions.
-        let backup = try LibraryBackup.capture(context: context, locks: locks, defaults: defaults, structuredHistory: true)
+        // Page history isn't synced: it stays on each Mac, and would otherwise
+        // upload every version of every picture.
+        let backup = try LibraryBackup.capture(context: context, locks: locks, defaults: defaults, includeHistory: false, forSync: true)
         localChanged = false  // Everything saved so far, including the capture's flush, is in `backup`.
         let savesAtCapture = saveCount
 
@@ -281,19 +313,19 @@ final class FolderSync: ObservableObject {
                 additions.append(try SyncBlobs.hydrate(archive, blob: blobs.data))
             }
             let referenced = desired.values.reduce(into: Set<String>()) { $0.formUnion(SyncBlobs.references($1)) }
-            let inUse = loaded.remotes.flatMap { $0.records.values.compactMap(\.notebook) }
-                .reduce(into: referenced) { $0.formUnion(SyncBlobs.references($1)) }
+            let inUse = referenced.union(loaded.otherDevicesUse)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             let bytes = try encoder.encode(state)
             return Plan(bytes: bytes, digest: Self.digest(bytes), removals: removals, additions: additions,
-                        payloads: blobs.known.filter { referenced.contains($0.key) }, inUse: inUse)
+                        payloads: blobs.known.filter { referenced.contains($0.key) }, inUse: inUse,
+                        previouslyPublished: loaded.previouslyPublished)
         }.value
         try Task.checkCancellation()
 
         if !plan.removals.isEmpty || !plan.additions.isEmpty {
             // Keep a complete, local recovery file before replacing any models.
             let recovery = localDirectory.appendingPathComponent("before-sync-\(UUID().uuidString).daftarbackup")
-            try await Task.detached(priority: .utility) { try backup.withPortableHistory().write(to: recovery) }.value
+            try await Task.detached(priority: .utility) { try backup.write(to: recovery) }.value
             // Replacing a notebook must never discard an edit made after the capture.
             guard SaveCoordinator.flushAll(), saveCount == savesAtCapture else { throw SyncError.libraryChanged }
             try context.save()
@@ -334,8 +366,11 @@ final class FolderSync: ObservableObject {
             if needsPublish { try Self.coordinatedWrite(bytes, to: published) }
             // Unreferenced payloads are kept for a week, in case another device
             // published a manifest that hasn't reached this Mac yet.
+            // Blobs only this Mac's previous upload used go right away; anything
+            // else waits a week in case another Mac's upload is still arriving.
             let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
-            for (key, modified) in existing where !plan.inUse.contains(key) && modified < cutoff {
+            for (key, modified) in existing where !plan.inUse.contains(key)
+                && (plan.previouslyPublished.contains(key) || modified < cutoff) {
                 try? FileManager.default.removeItem(at: SyncBlobs.url(for: key, in: blobDirectory))
             }
             let backups = try FileManager.default.contentsOfDirectory(at: localDirectory,
@@ -356,6 +391,10 @@ final class FolderSync: ObservableObject {
         var remotes: [SyncEnvelope]
         var signature: String
         var known: [String: Data]
+        /// Blob hashes this Mac's last published manifest used.
+        var previouslyPublished: Set<String>
+        /// Blob hashes other Macs' manifests use, as written by them.
+        var otherDevicesUse: Set<String>
     }
 
     private struct Plan: Sendable {
@@ -367,6 +406,7 @@ final class FolderSync: ObservableObject {
         var payloads: [String: Data]
         /// Every hash any device's manifest still references.
         var inUse: Set<String>
+        var previouslyPublished: Set<String>
     }
 
     /// Payloads already in memory, falling back to the sync folder's blob files.

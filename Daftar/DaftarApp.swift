@@ -10,30 +10,21 @@ struct DaftarApp: App {
     @StateObject private var folderSync = FolderSync()
     @StateObject private var sectionLock = SectionLockStore()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @AppStorage(AppSettings.appearanceMode) private var appearanceMode = "system"
 
     private var isTestHost: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || NSClassFromString("XCTestCase") != nil
     }
 
-    private var preferredColorScheme: ColorScheme? {
-        switch appearanceMode {
-        case "light": return .light
-        case "dark": return .dark
-        default: return nil
-        }
-    }
-
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: NotebookWindow.sceneID) {
             if isTestHost {
                 Color.clear
             } else {
                 NotebookWindow()
                     .environmentObject(sectionLock)
                     .environmentObject(folderSync)
-                    .preferredColorScheme(preferredColorScheme)
+                    .themedAppearance()
             }
         }
         // This one line creates the local database file for us.
@@ -44,13 +35,14 @@ struct DaftarApp: App {
 
         Settings {
             PreferencesView()
-                .preferredColorScheme(preferredColorScheme)
+                .themedAppearance()
         }
     }
 }
 
 /// Each window owns its own AppKit editor target and navigation callbacks.
 struct NotebookWindow: View {
+    static let sceneID = "notebook"
     @StateObject private var editor = EditorController()
     @SceneStorage("windowSessionID") private var sessionID = ""
     @State private var claimed = false
@@ -72,17 +64,47 @@ struct FocusedEditorKey: FocusedValueKey {
     typealias Value = EditorController
 }
 
+/// Adds a blank page to the focused window's current section.
+struct NewPageAction {
+    let perform: () -> Void
+}
+
+struct FocusedNewPageKey: FocusedValueKey {
+    typealias Value = NewPageAction
+}
+
 extension FocusedValues {
     var notebookEditor: EditorController? {
         get { self[FocusedEditorKey.self] }
         set { self[FocusedEditorKey.self] = newValue }
+    }
+    var newPageAction: NewPageAction? {
+        get { self[FocusedNewPageKey.self] }
+        set { self[FocusedNewPageKey.self] = newValue }
     }
 }
 
 struct EditorCommands: Commands {
     @FocusedValue(\.notebookEditor) private var editor
     @FocusedValue(\.spreadsheetUndo) private var spreadsheetUndo
+    @FocusedValue(\.newPageAction) private var newPage
+    @FocusedValue(\.quickOpenAction) private var quickOpen
+    @Environment(\.openWindow) private var openWindow
     var body: some Commands {
+        // Cmd N makes a page, as in Notes; a new window moves to Shift Cmd N.
+        CommandGroup(replacing: .newItem) {
+            Button("New Page") { newPage?.perform() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(newPage == nil)
+            Button("New Window") { openWindow(id: NotebookWindow.sceneID) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            Divider()
+            // Cmd O, as in other notes apps; Cmd P is Print.
+            Button("Go to Page\u{2026}") { quickOpen?.perform() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(quickOpen == nil)
+        }
+
         CommandGroup(replacing: .undoRedo) {
             if let spreadsheetUndo {
                 Button("Undo", action: spreadsheetUndo.undo).keyboardShortcut("z").disabled(!spreadsheetUndo.canUndo)
@@ -91,6 +113,12 @@ struct EditorCommands: Commands {
                 Button("Undo") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }.keyboardShortcut("z")
                 Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }.keyboardShortcut("z", modifiers: [.command, .shift])
             }
+        }
+
+        CommandGroup(replacing: .printItem) {
+            Button("Print\u{2026}") { editor?.printPage() }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(editor == nil)
         }
 
             CommandMenu("Format") {

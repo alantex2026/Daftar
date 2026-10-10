@@ -4,6 +4,29 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// The "Default image size" setting: how big a newly inserted picture is,
+/// relative to its own size. (The picture's right-click Size menu uses
+/// `ImageSizePreset`, which is relative to the page instead.)
+enum InsertedImageSize: String, CaseIterable, Sendable {
+    case small, medium, large
+
+    var scale: CGFloat {
+        switch self {
+        case .small: return 0.5
+        case .medium: return 1.0
+        case .large: return 1.5
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .small: return String(localized: "Small (50%)")
+        case .medium: return String(localized: "Medium (100%)")
+        case .large: return String(localized: "Large (150%)")
+        }
+    }
+}
+
 extension EditorController {
     // MARK: - Images
 
@@ -12,10 +35,10 @@ extension EditorController {
     /// menu, and what a manual resize drag snaps to when it lands close
     /// to one - so a page of photos stays tidy instead of every image
     /// sitting at whatever arbitrary width it was dropped in at.
-    enum ImageSizePreset: CaseIterable {
+    enum ImageSizePreset: String, CaseIterable {
         case small, medium, large, fullWidth, original
 
-        var widthFraction: CGFloat? {
+        nonisolated var widthFraction: CGFloat? {
             switch self {
             case .small: return 0.25
             case .medium: return 0.5
@@ -42,7 +65,7 @@ extension EditorController {
         /// benefit - but Full Width and Original are explicit, literal
         /// requests, so both bypass that cap: Full Width always reaches
         /// the container's edge, even for a small image.
-        func resolvedWidth(containerWidth: CGFloat, naturalWidth: CGFloat) -> CGFloat {
+        nonisolated func resolvedWidth(containerWidth: CGFloat, naturalWidth: CGFloat) -> CGFloat {
             guard let fraction = widthFraction else { return naturalWidth }
             if case .fullWidth = self { return containerWidth }
             return min(containerWidth * fraction, naturalWidth)
@@ -139,8 +162,9 @@ extension EditorController {
             for column in 0..<columns {
                 defer { index += 1 }
                 guard index < urls.count,
-                      let wrapper = try? FileWrapper(url: urls[index], options: .immediate),
-                      let image = NSImage(contentsOf: urls[index]) else { continue }
+                      let original = try? Data(contentsOf: urls[index]),
+                      let image = NSImage(data: original) else { continue }
+                let wrapper = Self.storedImageWrapper(original, filename: urls[index].lastPathComponent)
 
                 let block = NSTextTableBlock(table: table,
                                              startingRow: row, rowSpan: 1,
@@ -158,9 +182,7 @@ extension EditorController {
                 if size.width > cellWidth {
                     size = NSSize(width: cellWidth, height: size.height * cellWidth / size.width)
                 }
-                attachment.bounds = NSRect(origin: .zero, size: size)
-
-                let cell = NSMutableAttributedString(attachment: attachment)
+                let cell = NSMutableAttributedString(attributedString: InlineImageSize.attributedString(for: attachment, size: size, image: image))
                 cell.append(NSAttributedString(string: "\n", attributes: [.font: font]))
                 cell.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: cell.length))
                 result.append(cell)
@@ -171,33 +193,47 @@ extension EditorController {
     }
 
     func insertImage(from url: URL) {
-        guard let wrapper = try? FileWrapper(url: url, options: .immediate),
-              let image = NSImage(contentsOf: url) else {
+        guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else {
             errorMessage = "Couldn't insert \u{201C}\(url.lastPathComponent)\u{201D}."
             return
         }
-        insertImageAttachment(wrapper: wrapper, image: image)
+        insertImageAttachment(wrapper: Self.storedImageWrapper(data, filename: url.lastPathComponent), image: image)
     }
 
     /// For images that arrive as raw bytes rather than a file on disk -
     /// a pasted screenshot, or one dragged in without a backing file URL.
     func insertImage(data: Data, filename: String) {
         guard let image = NSImage(data: data) else { return }
-        let wrapper = FileWrapper(regularFileWithContents: data)
-        wrapper.preferredFilename = filename
-        insertImageAttachment(wrapper: wrapper, image: image)
+        insertImageAttachment(wrapper: Self.storedImageWrapper(data, filename: filename), image: image)
     }
 
+    /// The bytes actually stored for an inserted image, after the "Compress
+    /// new pictures" setting. Display size still comes from the original.
+    nonisolated static func storedImageWrapper(_ data: Data, filename: String,
+                                               compression: ImageCompression = AppSettings.imageCompression) -> FileWrapper {
+        let stored = compression.apply(to: data, filename: filename)
+        let wrapper = FileWrapper(regularFileWithContents: stored.data)
+        wrapper.preferredFilename = stored.filename
+        return wrapper
+    }
+
+    /// Every single-image insert (toolbar, paste, drag and drop) lands here,
+    /// scaled by the "Default image size" setting.
     private func insertImageAttachment(wrapper: FileWrapper, image: NSImage) {
         let attachment = NSTextAttachment(fileWrapper: wrapper)
-        let containerWidth = textView?.textContainer?.size.width ?? 0
-        let maxWidth = containerWidth > 0 ? min(520, containerWidth) : 520
-        var size = image.size
-        if size.width > maxWidth {
-            size = NSSize(width: maxWidth, height: size.height * maxWidth / size.width)
-        }
-        attachment.bounds = NSRect(origin: .zero, size: size)
-        insert(NSAttributedString(attachment: attachment))
+        let size = Self.insertedImageSize(for: image.size, containerWidth: textView?.textContainer?.size.width ?? 0,
+                                          size: AppSettings.imageSize)
+        insert(InlineImageSize.attributedString(for: attachment, size: size, image: image))
+    }
+
+    /// The size a newly inserted image gets: its own size scaled by `size`,
+    /// but never wider than the page, which would force sideways scrolling.
+    /// Before layout the container can be 0 wide; 520pt stands in until then.
+    nonisolated static func insertedImageSize(for natural: NSSize, containerWidth: CGFloat, size: InsertedImageSize) -> NSSize {
+        guard natural.width > 0, natural.height > 0 else { return natural }
+        let pageWidth = containerWidth > 0 ? containerWidth : 520
+        let width = min(natural.width * size.scale, pageWidth)
+        return NSSize(width: width, height: natural.height * width / natural.width)
     }
 
     /// Sets an image to one of the standard preset widths (its own line's
@@ -262,8 +298,9 @@ extension EditorController {
             return
         }
         edit(range) { storage in
-            attachment.bounds = NSRect(x: 0, y: attachment.bounds.origin.y, width: width, height: height)
-            storage.edited(.editedAttributes, range: range, changeInLength: 0)
+            let size = NSSize(width: width, height: height)
+            InlineImageSize.applyCell(to: attachment, size: size)
+            storage.addAttribute(.link, value: InlineImageSize.url(for: size), range: range)
         }
         knownImageWidths[ObjectIdentifier(attachment)] = width
     }
@@ -295,9 +332,9 @@ extension EditorController {
         guard !pending.isEmpty else { return }
         isApplyingImageSnap = true
         for resize in pending {
-            let height = resize.naturalSize.height * resize.width / resize.naturalSize.width
-            resize.attachment.bounds = NSRect(x: 0, y: resize.attachment.bounds.origin.y, width: resize.width, height: height)
-            storage.edited(.editedAttributes, range: resize.range, changeInLength: 0)
+            let size = NSSize(width: resize.width, height: resize.naturalSize.height * resize.width / resize.naturalSize.width)
+            InlineImageSize.applyCell(to: resize.attachment, size: size)
+            storage.addAttribute(.link, value: InlineImageSize.url(for: size), range: resize.range)
             knownImageWidths[ObjectIdentifier(resize.attachment)] = resize.width
         }
         isApplyingImageSnap = false

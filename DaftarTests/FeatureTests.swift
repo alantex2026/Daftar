@@ -92,7 +92,8 @@ final class FeatureTests: XCTestCase {
         XCTAssertEqual(restored.section?.notebook?.stableID, notebookID)
         XCTAssertEqual(restored.deletedAt, page.deletedAt)
         XCTAssertEqual(restored.contentData, page.contentData)
-        XCTAssertEqual(restored.historyData, page.historyData)
+        XCTAssertNotNil(page.historyData)
+        XCTAssertNil(restored.historyData, "backups don't include page history")
         XCTAssertEqual(restored.customTags, page.customTags)
         XCTAssertEqual(restored.paperSize, "a4")
     }
@@ -241,6 +242,39 @@ final class FeatureTests: XCTestCase {
         } catch { XCTAssertTrue(error is LibraryBackup.BackupError) }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
     }
+    func testOneSyncAuthorizationPerLaunchSyncsLockedSectionsWithoutUnlockingThem() async throws {
+        let context = try context(), page = try seed(context), shared = try folder()
+        let section = try XCTUnwrap(page.section)
+        section.isLocked = true
+        var prompts = 0
+        let locks = SectionLockStore { _, completion in prompts += 1; completion(true) }
+        var results: [Bool] = []
+        locks.authorizeSync(for: [section]) { results.append($0) }
+        locks.authorizeSync(for: [section]) { results.append($0) }
+        XCTAssertEqual(prompts, 1, "asked once per launch")
+        XCTAssertEqual(results, [true, true])
+
+        let sync = FolderSync(defaults: defaults(), localDirectory: try folder())
+        try await sync.synchronize(folder: shared, context: context, locks: locks)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
+        XCTAssertFalse(locks.isUnlocked(section), "the section stays locked on screen")
+        XCTAssertThrowsError(try LibraryBackup.capture(context: context, locks: locks, defaults: defaults()),
+                             "the sync permission doesn't extend to backups")
+    }
+
+    func testDeclinedOrUnneededSyncAuthorization() {
+        let locked = NoteSection(name: "Private"); locked.isLocked = true
+        let open = NoteSection(name: "Open")
+        var prompts = 0
+        let locks = SectionLockStore { _, completion in prompts += 1; completion(false) }
+        var allowed: Bool?
+        locks.authorizeSync(for: [open]) { allowed = $0 }
+        XCTAssertEqual(allowed, true); XCTAssertEqual(prompts, 0, "nothing locked: no prompt")
+        locks.authorizeSync(for: [locked]) { allowed = $0 }
+        XCTAssertEqual(allowed, false); XCTAssertFalse(locks.isSyncAuthorized)
+        XCTAssertFalse(locks.canCapture([locked], forSync: true))
+    }
+
     func testMissingSyncCheckpointPreservesUntrackedLocalEdits() async throws {
         let shared = try folder(), context = try context()
         let page = try seed(context)
@@ -421,5 +455,172 @@ final class FeatureTests: XCTestCase {
         let texts = { (c: ModelContext) in try Set(self.pages(c).map { try PageContentCodec.richText($0.contentData).string.prefix(9) }) }
         XCTAssertEqual(try texts(aContext), ["A version", "B version"])
         XCTAssertEqual(try texts(bContext), ["A version", "B version"])
+    }
+
+    // MARK: - History stays on each Mac
+
+    func testSyncDoesNotUploadHistoryAndKeepsEachMacsOwn() async throws {
+        let shared = try folder(), aContext = try context(), bContext = try context()
+        let page = try seed(aContext)
+        for version in 1...5 {
+            page.contentData = try largeRTFD("version \(version)")
+            try PageHistory.capture(page, force: true)
+        }
+        try aContext.save()
+        let locks = SectionLockStore()
+        let a = FolderSync(defaults: defaults(), localDirectory: try folder())
+        let b = FolderSync(defaults: defaults(), localDirectory: try folder())
+        try await a.synchronize(folder: shared, context: aContext, locks: locks)
+        XCTAssertEqual(blobFiles(shared).count, 1, "only the current page content, no history versions")
+        try await b.synchronize(folder: shared, context: bContext, locks: locks)
+        let bPage = try XCTUnwrap(pages(bContext).first)
+        XCTAssertEqual(bPage.contentData, page.contentData)
+        XCTAssertTrue(try PageHistory.revisions(bPage).isEmpty, "history isn't transferred")
+
+        // Each Mac's own history survives edits arriving from the other.
+        try PageHistory.capture(bPage, force: true)
+        bPage.contentData = try largeRTFD("edited on B")
+        try bContext.save()
+        try await b.synchronize(folder: shared, context: bContext, locks: locks)
+        try await a.synchronize(folder: shared, context: aContext, locks: locks)
+        XCTAssertEqual(try PageContentCodec.richText(page.contentData).string.prefix(11), "edited on B")
+        XCTAssertEqual(try PageHistory.revisions(page).count, 5, "A's history untouched by B's edit")
+        XCTAssertEqual(try PageHistory.revisions(bPage).count, 1)
+    }
+
+    func testOwnUnusedBlobsAreRemovedAtOnceButOtherMacsBlobsAreKept() async throws {
+        let shared = try folder(), context = try context()
+        let page = try seed(context)
+        page.contentData = try largeRTFD("first")
+        try context.save()
+        let sync = FolderSync(defaults: defaults(), localDirectory: try folder())
+        let locks = SectionLockStore()
+        try await sync.synchronize(folder: shared, context: context, locks: locks)
+        let first = Set(blobFiles(shared).keys)
+        XCTAssertEqual(first.count, 1)
+
+        // Another Mac (e.g. an older build) references a blob of its own.
+        let blobs = shared.appendingPathComponent("Daftar Sync/blobs")
+        let foreign = Data(repeating: 7, count: 10_000), foreignKey = SyncBlobs.hash(foreign)
+        try FileManager.default.createDirectory(at: SyncBlobs.url(for: foreignKey, in: blobs).deletingLastPathComponent(), withIntermediateDirectories: true)
+        try foreign.write(to: SyncBlobs.url(for: foreignKey, in: blobs))
+        var other = try JSONDecoder().decode(SyncEnvelope.self, from: Data(contentsOf: try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: shared.appendingPathComponent("Daftar Sync"), includingPropertiesForKeys: nil)
+                .first { $0.pathExtension == "daftarsync" })))
+        other.deviceID = UUID().uuidString
+        // Its own notebook (fresh IDs), whose only large payload is the foreign blob.
+        let mine = try XCTUnwrap(other.records.values.compactMap(\.notebook).first)
+        let theirs = try mine.conflictCopy(namespace: "other mac").mappingPages { page in
+            page.contentBlob = nil
+            page.contentData = try PageContentCodec.rtfd(NSAttributedString(string: "small"))
+            page.historyBlob = foreignKey
+        }
+        other.records = [theirs.stableID!.uuidString: SyncRecord(clock: [other.deviceID: 1], notebook: theirs)]
+        try JSONEncoder().encode(other).write(to: shared.appendingPathComponent("Daftar Sync/\(other.deviceID).daftarsync"))
+
+        page.contentData = try largeRTFD("second")
+        try context.save()
+        try await sync.synchronize(folder: shared, context: context, locks: locks)
+        let now = Set(blobFiles(shared).keys)
+        XCTAssertTrue(first.isDisjoint(with: now), "this Mac's old content blob is removed right away")
+        XCTAssertTrue(now.contains(foreignKey), "a blob another Mac still references is kept")
+    }
+
+    func testMoveOutPlacesPageDirectlyAfterItsFormerParent() throws {
+        let context = try context(), first = try seed(context, title: "First")
+        let section = try XCTUnwrap(first.section)
+        let second = Page(title: "Second", sortIndex: 1); context.insert(second); second.section = section
+        let child = Page(title: "Child", sortIndex: 0); context.insert(child); child.section = section; child.parent = first
+        LibraryActions.moveOut(child)
+        XCTAssertNil(child.parent)
+        XCTAssertEqual(section.rootPages.map(\.title), ["First", "Child", "Second"])
+    }
+
+    func testMovingAPageToAnotherSectionTakesItsSubpagesAlong() throws {
+        let context = try context(), page = try seed(context, title: "Parent")
+        let child = Page(title: "Child"); context.insert(child); child.section = page.section; child.parent = page
+        let trashedChild = Page(title: "Old"); context.insert(trashedChild); trashedChild.section = page.section
+        trashedChild.parent = page; trashedChild.deletedAt = Date()
+        let other = NoteSection(name: "Other"); context.insert(other); other.notebook = page.section?.notebook
+        let existing = Page(title: "Existing", sortIndex: 0); context.insert(existing); existing.section = other
+
+        LibraryActions.move(page, to: other)
+        XCTAssertTrue(page.section === other && child.section === other && trashedChild.section === other,
+                      "sub-pages, trashed ones included, move with their page")
+        XCTAssertEqual(other.rootPages.map(\.title), ["Existing", "Parent"])
+    }
+
+    func testNestingAndPlacingAcrossSectionsRefusesCycles() throws {
+        let context = try context(), a = try seed(context, title: "A")
+        let other = NoteSection(name: "Other"); context.insert(other); other.notebook = a.section?.notebook
+        let x = Page(title: "X", sortIndex: 0); context.insert(x); x.section = other
+        let y = Page(title: "Y", sortIndex: 1); context.insert(y); y.section = other
+
+        XCTAssertTrue(LibraryActions.place(a, beside: y))
+        XCTAssertEqual(other.rootPages.map(\.title), ["X", "A", "Y"])
+        XCTAssertTrue(LibraryActions.place(a, beside: y, after: true))
+        XCTAssertEqual(other.rootPages.map(\.title), ["X", "Y", "A"])
+
+        XCTAssertTrue(LibraryActions.nest(y, under: a))
+        XCTAssertTrue(y.parent === a)
+        XCTAssertFalse(LibraryActions.nest(a, under: y), "a page can't go inside its own sub-page")
+        XCTAssertFalse(LibraryActions.place(a, beside: y), "nor beside its own sub-page")
+        XCTAssertFalse(LibraryActions.nest(a, under: a))
+        XCTAssertTrue(y.parent === a, "a refused move changes nothing")
+    }
+
+    func testDropZonesSplitARowIntoEdgesAndMiddle() {
+        XCTAssertEqual(PageDropZone.zone(atY: 3, rowHeight: 39), .before)
+        XCTAssertEqual(PageDropZone.zone(atY: 20, rowHeight: 39), .inside)
+        XCTAssertEqual(PageDropZone.zone(atY: 36, rowHeight: 39), .after)
+    }
+
+    func testCursorPositionsAreBatchedAndWrittenOnFlush() {
+        let defaults = defaults(), id = UUID()
+        SessionStore.rememberCursor(7, id: id)
+        XCTAssertEqual(SessionStore.latestCursor(id), 7, "a pending position is used before it's written")
+        XCTAssertNil(defaults.object(forKey: "cursor." + id.uuidString))
+        SessionStore.flushCursors(defaults: defaults)
+        XCTAssertEqual(SessionStore.cursor(id, defaults: defaults), 7)
+    }
+
+    func testBacklinksReloadOnlyWhenAnotherPageSaves() throws {
+        let context = try context(), page = try seed(context)
+        let other = Page(title: "Other"); context.insert(other); other.section = page.section
+        try context.save()
+        func note(updated: [PersistentIdentifier]) -> Notification {
+            Notification(name: ModelContext.didSave, object: context, userInfo: [
+                ModelContext.NotificationKey.insertedIdentifiers.rawValue: [PersistentIdentifier](),
+                ModelContext.NotificationKey.updatedIdentifiers.rawValue: updated,
+                ModelContext.NotificationKey.deletedIdentifiers.rawValue: [PersistentIdentifier]()])
+        }
+        let id = page.persistentModelID
+        XCTAssertFalse(BacklinksView.needsReload(after: note(updated: [id]), for: id), "autosaving this page")
+        XCTAssertTrue(BacklinksView.needsReload(after: note(updated: [id, other.persistentModelID]), for: id))
+        XCTAssertTrue(BacklinksView.needsReload(after: Notification(name: ModelContext.didSave), for: id), "no details")
+    }
+
+    func testTypedTextKeepsTheChosenColorWhilePastedTextIsNormalized() throws {
+        let storage = NSTextStorage(), layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(containerSize: NSSize(width: 400, height: 1000))
+        layout.addTextContainer(container)
+        let textView = DaftarTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400), textContainer: container)
+        textView.isRichText = true
+        let coordinator = RichTextEditor.Coordinator(onChange: { _, _, _ in })
+        textView.delegate = coordinator
+        textView.typingAttributes = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.systemRed]
+        textView.insertText("red", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .systemRed)
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        defer { pasteboard.releaseGlobally() }
+        let pasted = NSAttributedString(string: "black", attributes: [.foregroundColor: NSColor.black])
+        pasteboard.clearContents()
+        pasteboard.setData(try pasted.data(from: NSRange(location: 0, length: pasted.length),
+                                           documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]), forType: .rtf)
+        XCTAssertTrue(textView.readSelection(from: pasteboard, type: .rtf))
+        XCTAssertEqual(storage.string, "redblack")
+        XCTAssertEqual(storage.attribute(.foregroundColor, at: 3, effectiveRange: nil) as? NSColor, .textColor)
     }
 }

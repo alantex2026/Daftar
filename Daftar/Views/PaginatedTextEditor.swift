@@ -22,12 +22,18 @@ struct PaginatedTextEditor: NSViewRepresentable {
     @ObservedObject var controller: EditorController
     var pageID: UUID? = nil
     var paperSize: String = "letter"
+    /// Read where the editor is created, so a theme change reaches updateNSView.
+    var theme: ColorTheme = ThemeStore.shared.theme
     var onChange: (Data, String, [UUID]) throws -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+    func makeCoordinator() -> Coordinator {
+        let coordinator = Coordinator(onChange: onChange)
+        coordinator.appliedTheme = theme
+        return coordinator
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let savedCursor = pageID.map { SessionStore.cursor($0) } ?? 0
+        let savedCursor = pageID.map { SessionStore.latestCursor($0) } ?? 0
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
         layoutManager.delegate = context.coordinator
@@ -51,7 +57,7 @@ struct PaginatedTextEditor: NSViewRepresentable {
         pagesView.onSelectionChange = { [weak controller] textView in
             controller?.textView = textView
             controller?.refreshState()
-            if let pageID { SessionStore.saveCursor(textView.selectedRange().location, id: pageID) }
+            if let pageID { SessionStore.rememberCursor(textView.selectedRange().location, id: pageID) }
         }
 
         let scrollView = NSScrollView()
@@ -69,6 +75,11 @@ struct PaginatedTextEditor: NSViewRepresentable {
             controller.refreshState()
             controller.saveState = .idle
             if loadFailed { controller.errorMessage = "This page couldn't be read. Its original data has been preserved." }
+            // Sheets are laid out lazily, so matches are highlighted without
+            // scrolling (the cursor restore above owns the scroll position).
+            if let pageID, let query = SearchHighlight.take(for: pageID), let first = pagesView.pages.first {
+                pagesView.showsSearchHighlight = SearchHighlight.apply(query, to: first, scroll: false) > 0
+            }
         }
 
         return scrollView
@@ -84,6 +95,10 @@ struct PaginatedTextEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.pagesView?.setPageSize(Self.size(for: paperSize))
+        if context.coordinator.appliedTheme != theme {
+            context.coordinator.appliedTheme = theme
+            context.coordinator.pagesView?.applyTheme()
+        }
         if abs(scrollView.magnification - CGFloat(controller.zoom)) > 0.001 {
             scrollView.magnification = CGFloat(controller.zoom)
         }
@@ -97,6 +112,7 @@ struct PaginatedTextEditor: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
         coordinator.flush()
+        coordinator.pagesView?.pageUndoManager.removeAllActions()
         if let current = coordinator.controller?.textView,
            coordinator.pagesView?.pages.contains(where: { $0 === current }) == true {
             coordinator.controller?.textView = nil
@@ -107,6 +123,7 @@ struct PaginatedTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, @preconcurrency NSLayoutManagerDelegate {
         private let autosaver: RichTextAutosaver
         weak var pagesView: PaginatedPagesView?
+        var appliedTheme: ColorTheme?
         var didFocusOnAppear = false
         weak var controller: EditorController? { didSet { linkRouter.controller = controller } }
         let linkRouter = EditorLinkRouter()
@@ -137,6 +154,7 @@ final class PaginatedPagesView: NSView {
     private let layoutManager: NSLayoutManager
     private let textStorage: NSTextStorage
     private(set) var pages: [NSTextView] = []
+    let pageUndoManager = UndoManager()
     private(set) var imageCanvas: ImageCanvas?
     weak var editorController: EditorController?
     var onTextChange: (() -> Void)?
@@ -147,6 +165,8 @@ final class PaginatedPagesView: NSView {
     private var trimming = false
     private var pendingCursor: Int?
     private(set) weak var restoredCursorView: NSTextView?
+    /// Set while search matches are highlighted; the first edit clears them.
+    var showsSearchHighlight = false
     private let margin = PaginatedTextEditor.pageMargin
     private let gap = PaginatedTextEditor.pageGap
 
@@ -162,6 +182,19 @@ final class PaginatedPagesView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isFlipped: Bool { true }
+
+    /// Sheet, default text, selection and caret colors from the color theme.
+    func applyTheme() {
+        let themeTexts = ColorTheme.allCases.map(\.palette.documentText)
+        for case let page as DaftarTextView in pages {
+            page.backgroundColor = AppTheme.documentPage
+            // Only swap a theme's own default text color, never one the person chose.
+            if let current = page.typingAttributes[.foregroundColor] as? NSColor, themeTexts.contains(current) {
+                page.typingAttributes[.foregroundColor] = AppTheme.documentText
+            }
+            page.applyTheme()
+        }
+    }
 
     func configureImageCanvas(controller: EditorController) {
         editorController = controller
@@ -271,9 +304,10 @@ final class PaginatedPagesView: NSView {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.drawsBackground = true
         textView.appearance = NSAppearance(named: .aqua)
-        textView.backgroundColor = .white
+        textView.backgroundColor = AppTheme.documentPage
         textView.textContainerInset = NSSize(width: margin, height: margin)
-        textView.typingAttributes = [.font: EditorController.defaultFont, .foregroundColor: NSColor.black]
+        textView.typingAttributes = [.font: EditorController.defaultFont, .foregroundColor: AppTheme.documentText]
+        textView.applyTheme()
         textView.delegate = self
         textView.wantsLayer = true
         textView.layer?.shadowColor = NSColor.black.cgColor
@@ -347,11 +381,19 @@ final class PaginatedPagesView: NSView {
 }
 
 extension PaginatedPagesView: NSTextViewDelegate {
+    /// One undo history for this document (all its sheets share the text), not
+    /// the window's - see `RichTextEditor.Coordinator.undoManager`.
+    func undoManager(for view: NSTextView) -> UndoManager? { pageUndoManager }
+
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         onSelectionChange?(textView)
         return onLink?(link, charIndex, textView) ?? false
     }
     func textDidChange(_ notification: Notification) {
+        if showsSearchHighlight, let first = pages.first {
+            SearchHighlight.clear(in: first)  // all sheets share one layout manager
+            showsSearchHighlight = false
+        }
         imageCanvas?.sync()
         onTextChange?()
         DispatchQueue.main.async { [weak self] in self?.trimEmptyPages() }

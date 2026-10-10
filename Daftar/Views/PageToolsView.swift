@@ -3,41 +3,47 @@ import SwiftData
 
 struct PageToolsView: View {
     @Bindable var page: Page
-    @Environment(\.modelContext) private var context
     @State private var showHistory = false
-    @State private var showTags = false
+
+    var body: some View {
+        Button { if SaveCoordinator.flushAll() { showHistory = true } } label: { Image(systemName: "clock.arrow.circlepath") }
+            .help("Page version history")
+            .accessibilityLabel(Text("Version History"))
+            .sheet(isPresented: $showHistory) { PageHistoryView(page: page) }
+    }
+}
+
+/// Adds and removes a page's custom tags. Opened from the toolbar's tag menu.
+struct CustomTagsEditor: View {
+    @Bindable var page: Page
+    @Environment(\.modelContext) private var context
     @State private var draftTag = ""
     @State private var errorMessage: String?
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button { showTags = true } label: { Image(systemName: "tag") }
-                .help("Custom tags")
-                .popover(isPresented: $showTags) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Page Tags").font(.headline)
-                        ForEach(page.customTags, id: \.self) { tag in
-                            HStack {
-                                Text(tag)
-                                Spacer()
-                                Button { updateTags(page.customTags.filter { $0 != tag }) } label: {
-                                    Image(systemName: "minus.circle")
-                                }.buttonStyle(.borderless)
-                            }
-                        }
-                        HStack {
-                            TextField("New tag", text: $draftTag).onSubmit(addTag)
-                            Button("Add", action: addTag).disabled(draftTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }.padding().frame(width: 270)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Custom Tags").font(.headline)
+            ForEach(page.customTags, id: \.self) { tag in
+                HStack {
+                    Text(tag)
+                    Spacer()
+                    Button { updateTags(page.customTags.filter { $0 != tag }) } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(Text("Remove \(tag)"))
                 }
-            Button { if SaveCoordinator.flushAll() { showHistory = true } } label: { Image(systemName: "clock.arrow.circlepath") }
-                .help("Page version history")
+            }
+            HStack {
+                TextField("New tag", text: $draftTag).onSubmit(addTag)
+                Button("Add", action: addTag).disabled(draftTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
         }
-        .sheet(isPresented: $showHistory) { PageHistoryView(page: page) }
-        .alert("Couldn't Update Tags", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-            Button("OK") {}
-        } message: { Text(errorMessage ?? "") }
+        .padding()
+        .frame(width: 270)
     }
     private func addTag() {
         let tag = draftTag.trimmingCharacters(in: .whitespacesAndNewlines)

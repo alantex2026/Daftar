@@ -136,8 +136,10 @@ results across **all** pages, matching titles and body text.
   custom tags, history, Trash, and deletions synchronize. Saved searches remain
   local, but are included in library backups.
 - Sync is off until configured. Its status means the shared-folder write completed;
-  delivery to another Mac depends on your folder provider. Locked sections must be
-  unlocked before publishing. Sync files and backups are not encrypted by Daftar.
+  delivery to another Mac depends on your folder provider. If any section is locked,
+  Daftar asks for Touch ID or your password once per launch so background sync can
+  include it; the section stays locked on screen. Sync files and backups are not
+  encrypted by Daftar.
 - Before applying remote changes, Daftar keeps a local recovery backup. The latest
   ten are retained; **Show Recovery Backups** opens their folder. Turning sync off
   stops future operations and leaves existing local and shared files intact.

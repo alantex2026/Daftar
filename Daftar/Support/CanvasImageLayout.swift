@@ -97,3 +97,70 @@ final class CanvasImageCell: NSTextAttachmentCell {
     override func cellSize() -> NSSize { .zero }
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {}
 }
+
+/// Display size of an inline (flowing with the text) picture.
+///
+/// TextKit 1 lays an attachment out at its cell's size - the picture's natural
+/// size - and ignores `NSTextAttachment.bounds`, which RTFD doesn't save
+/// either. So resizing an inline picture used to change nothing visible until
+/// a handle drag turned it into a positioned picture. The size is kept on the
+/// picture's link attribute (saved with the page, like `CanvasImageLayout`)
+/// and applied as a cell of exactly that size.
+enum InlineImageSize {
+    static func url(for size: NSSize) -> URL {
+        var url = URLComponents()
+        url.scheme = "daftar-image"; url.host = "inline"
+        url.queryItems = [URLQueryItem(name: "w", value: String(Double(size.width))),
+                          URLQueryItem(name: "h", value: String(Double(size.height)))]
+        return url.url!
+    }
+
+    static func size(from link: Any?) -> NSSize? {
+        let raw = (link as? URL)?.absoluteString ?? link as? String
+        guard let raw, let url = URLComponents(string: raw), url.scheme == "daftar-image", url.host == "inline",
+              let items = url.queryItems,
+              let w = items.first(where: { $0.name == "w" })?.value.flatMap(Double.init),
+              let h = items.first(where: { $0.name == "h" })?.value.flatMap(Double.init),
+              w.isFinite, h.isFinite, (1...100_000).contains(w), (1...100_000).contains(h) else { return nil }
+        return NSSize(width: w, height: h)
+    }
+
+    /// Gives `attachment` a cell drawing its picture at exactly `size`.
+    static func applyCell(to attachment: NSTextAttachment, size: NSSize, image: NSImage? = nil) {
+        guard let picture = image?.copy() as? NSImage
+                ?? attachment.fileWrapper?.regularFileContents.flatMap(NSImage.init(data:)) else { return }
+        picture.size = size  // draws the full-resolution picture scaled into this size
+        attachment.attachmentCell = SizedImageCell(imageCell: picture)
+        attachment.bounds = NSRect(origin: .zero, size: size)
+    }
+
+    static func needsCell(_ attachment: NSTextAttachment, size: NSSize) -> Bool {
+        guard let current = attachment.attachmentCell?.cellSize() else { return true }
+        return abs(current.width - size.width) > 0.5 || abs(current.height - size.height) > 0.5
+    }
+
+    /// A picture character carrying `size`, ready to insert. At its natural
+    /// size a picture needs neither a link nor a special cell. `bounds` always
+    /// holds the displayed size: resize handles and previews read it.
+    static func attributedString(for attachment: NSTextAttachment, size: NSSize, image: NSImage) -> NSAttributedString {
+        let natural = abs(image.size.width - size.width) <= 0.5 && abs(image.size.height - size.height) <= 0.5
+        if natural { attachment.bounds = NSRect(origin: .zero, size: size) }
+        else { applyCell(to: attachment, size: size, image: image) }
+        let text = NSMutableAttributedString(attachment: attachment)
+        if !natural { text.addAttribute(.link, value: url(for: size), range: NSRange(location: 0, length: text.length)) }
+        return text
+    }
+
+    /// Undo (or anything else) removed the size: back to the natural-size cell.
+    /// Returns true if the attachment changed.
+    static func resetIfUnsized(_ attachment: NSTextAttachment) -> Bool {
+        guard attachment.attachmentCell is SizedImageCell else { return false }
+        attachment.attachmentCell = nil  // AppKit recreates its default, natural-size cell
+        attachment.bounds = NSRect(origin: .zero, size: attachment.attachmentCell?.cellSize() ?? .zero)
+        return true
+    }
+}
+
+/// Marks cells created by `InlineImageSize`, so they can be told apart from
+/// AppKit's default cell and from the canvas's hidden cell.
+final class SizedImageCell: NSTextAttachmentCell {}

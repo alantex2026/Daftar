@@ -20,9 +20,18 @@ final class DaftarTextView: NSTextView {
 
     weak var imageCanvas: ImageCanvas?
     private var imageDragRange: NSRange?
-    private var isPlacingCanvasCaret = false
+    /// Mouse-down that placed a canvas caret; replayed if it turns into a drag.
+    private var canvasCaretMouseDown: NSEvent?
+    /// Caret shown at an empty canvas spot that has not been typed into yet.
+    var pendingCanvasPlacement: CanvasPlacement?
+    /// True while text arrives from a paste or drop (both read the pasteboard
+    /// through `readSelection`), so only that text has its colour normalized -
+    /// typed text keeps the colour chosen in the toolbar.
+    private(set) var isReadingPasteboard = false
 
     override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        isReadingPasteboard = true
+        defer { isReadingPasteboard = false }
         switch type {
         case .fileURL:
             guard let items = pboard.pasteboardItems else { break }
@@ -49,7 +58,7 @@ final class DaftarTextView: NSTextView {
     /// what lets `ImageResizeHandlesView` pick it up and show its resize
     /// handles.
     override func mouseDown(with event: NSEvent) {
-        isPlacingCanvasCaret = false
+        canvasCaretMouseDown = nil
         let point = convert(event.locationInWindow, from: nil)
         if let range = imageAttachmentRange(at: point) {
             controller?.textView = self
@@ -63,26 +72,162 @@ final class DaftarTextView: NSTextView {
         imageDragRange = nil
         if event.clickCount == 1, event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
            placeInsertionPointOnCanvas(at: point) {
-            isPlacingCanvasCaret = true
+            canvasCaretMouseDown = event
             return
         }
         super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if isPlacingCanvasCaret { return }
+        if let down = canvasCaretMouseDown {
+            let start = convert(down.locationInWindow, from: nil)
+            let now = convert(event.locationInWindow, from: nil)
+            guard hypot(now.x - start.x, now.y - start.y) >= 3 else { return }
+            // A real drag from empty paper: select text as usual. AppKit's
+            // mouseDown runs its own tracking loop for the rest of the drag.
+            canvasCaretMouseDown = nil
+            clearPendingCanvasPlacement()
+            super.mouseDown(with: down)
+            return
+        }
         if let range = imageDragRange { imageCanvas?.dragInline(range: range, event: event); return }
         super.mouseDragged(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
-        if isPlacingCanvasCaret { isPlacingCanvasCaret = false; return }
+        if canvasCaretMouseDown != nil { canvasCaretMouseDown = nil; return }
         if let range = imageDragRange {
             imageCanvas?.endInlineDrag(range: range, event: event)
             imageDragRange = nil
             return
         }
         super.mouseUp(with: event)
+    }
+
+    // MARK: - Caret beside pictures
+
+    /// Next to an inline picture the line is as tall as the picture, and AppKit
+    /// sizes the caret to the whole line: a tall bar flashing beside the image.
+    /// Draw it at text height on the baseline instead, as Pages and Notes do.
+    /// (A subclass overriding this also keeps AppKit on this drawing path.)
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        if var pending = pendingCanvasCaretRect {
+            // A caret placed on empty paper is drawn where it was clicked.
+            pending.size.width = rect.width
+            super.drawInsertionPoint(in: pending, color: color, turnedOn: flag)
+            return
+        }
+        super.drawInsertionPoint(in: textHeightCaret(rect), color: color, turnedOn: flag)
+    }
+
+    // MARK: - Theme
+
+    /// Selection and caret colors from the current color theme.
+    func applyTheme() {
+        selectedTextAttributes[.backgroundColor] = AppTheme.textSelection
+        insertionPointColor = AppTheme.caret ?? .textColor
+        // Image selection handles are drawn in the accent color.
+        subviews.forEach { $0.needsDisplay = true }
+    }
+
+    // MARK: - Pending canvas caret
+
+    /// Any selection change other than placing the caret abandons it.
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        if let placement = pendingCanvasPlacement,
+           ranges.count != 1 || ranges[0].rangeValue != NSRange(location: placement.anchor, length: 0) {
+            clearPendingCanvasPlacement()
+        }
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { clearPendingCanvasPlacement() }
+        return resigned
+    }
+
+    /// Edits that did not go through the hooks below (toolbar, undo, …)
+    /// make the pending placement stale.
+    override func didChangeText() {
+        clearPendingCanvasPlacement()
+        super.didChangeText()
+    }
+
+    /// The replacement range for the first edit at a pending caret: the
+    /// placement is written into the note and the edit lands at the click.
+    private func rangeAfterPlacingCanvasText(_ range: NSRange) -> NSRange {
+        guard let placement = pendingCanvasPlacement else { return range }
+        let atAnchor = range.location == NSNotFound || range == NSRange(location: placement.anchor, length: 0)
+        guard atAnchor else { clearPendingCanvasPlacement(); return range }
+        return materializePendingCanvasPlacement() && range.location != NSNotFound ? selectedRange() : range
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        super.insertText(string, replacementRange: rangeAfterPlacingCanvasText(replacementRange))
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: rangeAfterPlacingCanvasText(replacementRange))
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        materializePendingCanvasPlacement()
+        if continueListOnNewline() { return }
+        super.insertNewline(sender)
+    }
+
+    override func insertTab(_ sender: Any?) {
+        // A tab placed on empty paper keeps its canvas meaning.
+        if pendingCanvasPlacement == nil, changeListLevel(by: 1) { return }
+        materializePendingCanvasPlacement()
+        super.insertTab(sender)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        // Shift-Tab outdents list items; elsewhere it keeps moving focus back.
+        if pendingCanvasPlacement == nil, changeListLevel(by: -1) { return }
+        super.insertBacktab(sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        materializePendingCanvasPlacement()
+        super.paste(sender)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        materializePendingCanvasPlacement()
+        super.pasteAsPlainText(sender)
+    }
+
+    override func pasteAsRichText(_ sender: Any?) {
+        materializePendingCanvasPlacement()
+        super.pasteAsRichText(sender)
+    }
+
+    /// Deleting at a caret that was only shown would remove text the person
+    /// can't see next to it, so it just cancels the placement.
+    override func deleteBackward(_ sender: Any?) {
+        if pendingCanvasPlacement != nil { clearPendingCanvasPlacement(); return }
+        if removeListMarkerOnBackspace() { return }
+        let joinsLines = deletionJoinsLines()
+        super.deleteBackward(sender)
+        if joinsLines { renumberLists() }
+    }
+
+    override func deleteForward(_ sender: Any?) {
+        if pendingCanvasPlacement != nil { clearPendingCanvasPlacement(); return }
+        super.deleteForward(sender)
+    }
+
+    /// `rect` shrunk to one line of the current font, kept at the bottom of the
+    /// line where the text sits. Ordinary lines are left alone.
+    func textHeightCaret(_ rect: NSRect) -> NSRect {
+        let font = (typingAttributes[.font] as? NSFont) ?? EditorController.defaultFont
+        let lineHeight = ceil(layoutManager?.defaultLineHeight(for: font) ?? (font.ascender - font.descender + font.leading))
+        guard rect.height > lineHeight * 1.5 else { return rect }
+        // NSTextView is flipped: maxY is the bottom of the line.
+        return NSRect(x: rect.minX, y: rect.maxY - lineHeight, width: rect.width, height: lineHeight)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -139,6 +284,8 @@ struct RichTextEditor: NSViewRepresentable {
     /// Shared remote control used by the toolbar.
     @ObservedObject var controller: EditorController
     var pageID: UUID? = nil
+    /// Read where the editor is created, so a theme change reaches updateNSView.
+    var theme: ColorTheme = ThemeStore.shared.theme
 
     /// Called a moment after the user stops typing, so we can save. The
     /// third value is every other-page link found in the saved text, used
@@ -146,7 +293,9 @@ struct RichTextEditor: NSViewRepresentable {
     var onChange: (Data, String, [UUID]) throws -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+        let coordinator = Coordinator(onChange: onChange)
+        coordinator.appliedTheme = theme
+        return coordinator
     }
 
     // Build the real macOS view.
@@ -172,6 +321,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.controller = controller
         textView.allowsCanvasTyping = true
+        textView.applyTheme()
 
         let canvas = ImageCanvas(host: textView, storage: textStorage, controller: controller) { [weak textView] in
             textView.map { [$0] } ?? []
@@ -246,16 +396,19 @@ struct RichTextEditor: NSViewRepresentable {
         context.coordinator.controller = controller
         context.coordinator.pageID = pageID
         if let pageID {
-            textView.setSelectedRange(NSRange(location: min(SessionStore.cursor(pageID), textView.string.utf16.count), length: 0))
+            textView.setSelectedRange(NSRange(location: min(SessionStore.latestCursor(pageID), textView.string.utf16.count), length: 0))
             textView.scrollRangeToVisible(textView.selectedRange())
         }
 
+        context.coordinator.textView = textView
+        let coordinator = context.coordinator
         // Done a tick later so we never change SwiftUI state while it is drawing.
         DispatchQueue.main.async {
             controller.textView = textView
             controller.refreshCounts()
             controller.refreshState()
             controller.saveState = .idle
+            coordinator.applyPendingSearchHighlight()
             if loadFailed {
                 controller.errorMessage = "This page's saved content couldn't be read. It may be damaged."
             }
@@ -271,6 +424,10 @@ struct RichTextEditor: NSViewRepresentable {
         if let textView = scrollView.documentView as? NSTextView,
            controller.textView !== textView {
             controller.textView = textView
+        }
+        if context.coordinator.appliedTheme != theme, let textView = scrollView.documentView as? DaftarTextView {
+            context.coordinator.appliedTheme = theme
+            textView.applyTheme()
         }
         // Keeps the resize handles tracking their image through anything
         // that reflows the text without also changing the selection or
@@ -301,6 +458,8 @@ struct RichTextEditor: NSViewRepresentable {
     /// We save straight away so nothing is lost.
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
         PerfLog.measure("RichTextEditor.dismantleNSView (flush)") { coordinator.flush() }
+        // The page is gone: its undo steps must not outlive it.
+        coordinator.undoManager.removeAllActions()
         if coordinator.controller?.textView === nsView.documentView {
             coordinator.controller?.textView = nil
         }
@@ -314,7 +473,23 @@ struct RichTextEditor: NSViewRepresentable {
         weak var controller: EditorController? { didSet { linkRouter.controller = controller } }
         var pageID: UUID?
         var imageCanvas: ImageCanvas?
+        var appliedTheme: ColorTheme?
         let linkRouter = EditorLinkRouter()
+        /// This page's own undo history. With the window's shared undo manager,
+        /// undoing past this page's edits reached pages that were already closed
+        /// and silently rewrote (and autosaved) their text.
+        let undoManager = UndoManager()
+
+        func undoManager(for view: NSTextView) -> UndoManager? { undoManager }
+        weak var textView: NSTextView?
+        private var showsSearchHighlight = false
+        private var highlightObserver: NSObjectProtocol?
+
+        /// Highlights the search that opened this page (see `SearchHighlight`).
+        func applyPendingSearchHighlight() {
+            guard let pageID, let textView, let query = SearchHighlight.take(for: pageID) else { return }
+            showsSearchHighlight = SearchHighlight.apply(query, to: textView) > 0
+        }
         private var pendingEditLocation: Int?
         /// Set once `updateNSView` has successfully claimed first responder
         /// for a newly opened page, so we don't keep stealing focus back
@@ -323,21 +498,35 @@ struct RichTextEditor: NSViewRepresentable {
 
         init(onChange: @escaping (Data, String, [UUID]) throws -> Void) {
             autosaver = RichTextAutosaver(onChange: onChange)
+            super.init()
+            // A search result for the page that's already open.
+            highlightObserver = NotificationCenter.default.addObserver(forName: .daftarHighlightSearch, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let id = note.object as? UUID, id == self.pageID else { return }
+                    self.applyPendingSearchHighlight()
+                }
+            }
+        }
+
+        deinit {
+            if let highlightObserver { NotificationCenter.default.removeObserver(highlightObserver) }
         }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             linkRouter.handle(link, at: charIndex, in: textView)
         }
 
-        /// Remember where an edit (typed or pasted) is about to start, so
+        /// Remember where a pasted or dropped edit is about to start, so
         /// `textDidChange` can tell exactly what text just landed.
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            pendingEditLocation = affectedCharRange.location
+            let pasted = (textView as? DaftarTextView)?.isReadingPasteboard == true
+            pendingEditLocation = pasted ? affectedCharRange.location : nil
             return true
         }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            if showsSearchHighlight { SearchHighlight.clear(in: textView); showsSearchHighlight = false }
             normalizeColorOfLastEdit(in: textView)
             controller?.snapRecentlyResizedImages()
             updateImageHandles(in: textView)
@@ -431,7 +620,7 @@ struct RichTextEditor: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             if let pageID, let textView = notification.object as? NSTextView {
-                SessionStore.saveCursor(textView.selectedRange().location, id: pageID)
+                SessionStore.rememberCursor(textView.selectedRange().location, id: pageID)
             }
             controller?.refreshState()
             if let textView = notification.object as? NSTextView {

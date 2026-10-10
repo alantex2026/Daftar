@@ -13,8 +13,8 @@ extension EditorController {
         let level: Int   // 1 = Heading 1, 2 = Heading 2, 3 = Heading 3
     }
 
-    /// Scans the page for paragraphs styled as one of the built-in heading
-    /// sizes (see `TextStyle`). A heuristic, not a stored outline - cheap
+    /// Scans the page for paragraphs styled as one of the built-in headings
+    /// (see `TextStyle.headingLevel`). A heuristic, not a stored outline - cheap
     /// enough to run on demand when the Table of Contents is opened, no
     /// need to keep it up to date on every keystroke.
     func headings() -> [HeadingItem] {
@@ -26,13 +26,7 @@ extension EditorController {
             let trimmed = substring.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             let font = (storage.attribute(.font, at: subRange.location, effectiveRange: nil) as? NSFont) ?? Self.defaultFont
-            let level: Int
-            switch font.pointSize {
-            case 22...:   level = 1
-            case 18..<22: level = 2
-            case 15..<18: level = 3
-            default: return
-            }
+            guard let level = TextStyle.headingLevel(of: font) else { return }
             result.append(HeadingItem(range: subRange, text: trimmed, level: level))
         }
         return result

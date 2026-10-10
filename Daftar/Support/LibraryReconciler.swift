@@ -121,7 +121,11 @@ struct LibraryReconciler {
             assign(page, \.pageKindRaw, record.kind)
             page.historyCapturedAt = nil  // History may have changed with it.
         }
-        if !PageHistory.hasSameRevisions(page, as: record.historyData) { page.historyData = record.historyData; page.historyCapturedAt = nil }
+        // Sync doesn't carry history, so each Mac keeps its own; only an
+        // archive that actually has history replaces it.
+        if record.historyData != nil, !PageHistory.hasSameRevisions(page, as: record.historyData) {
+            page.historyData = record.historyData; page.historyCapturedAt = nil
+        }
         assign(page, \.title, record.title)
         assign(page, \.tagRaw, record.tag)
         assign(page, \.customTags, record.customTags ?? [])

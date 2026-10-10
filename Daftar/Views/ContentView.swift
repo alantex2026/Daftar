@@ -27,30 +27,43 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var errorMessage: String?
     @State private var appendAudioID: UUID?
+    @State private var showQuickOpen = false
     @StateObject private var contextSaver = SaveCoordinator()
+    @StateObject private var undoToast = UndoToast()
     @EnvironmentObject private var sectionLock: SectionLockStore
     @EnvironmentObject private var folderSync: FolderSync
 
     var body: some View {
         SplitContainerView(isSidebarVisible: $showSidebar) {
-            SidebarView(selectedSection: $selectedSection,
+            SidebarView(selectedSection: sectionSelection,
                         selectedPage: $selectedPage,
                         openTabs: $openTabs)
+                .environmentObject(undoToast)
+                .themedTint()
         } outline: {
             PageOutlineView(section: selectedSection,
                             selectedPage: $selectedPage,
                             searchText: $searchText)
+                .environmentObject(undoToast)
+                .themedTint()
         } detail: {
             DetailView(openTabs: $openTabs,
-                       selectedSection: $selectedSection,
+                       selectedSection: sectionSelection,
                        selectedPage: $selectedPage,
                        editor: editor)
+                .themedTint()
         }
+        // Classic keeps the system toolbar; other themes paint it so the
+        // window reads as one surface instead of a grey bar over the panes.
+        .toolbarBackground(AppTheme.toolbar ?? .clear, for: .windowToolbar)
+        .toolbarBackground(AppTheme.toolbar == nil ? .automatic : .visible, for: .windowToolbar)
         // 640pt = half the width of a 13" MacBook Air, the smallest common
         // half-screen tile - keeping the window's own minimum at or below
         // that is what lets macOS's window snapping actually reach it.
         // Height is unaffected by side-by-side tiling, so it's untouched.
         .frame(minWidth: 640, minHeight: 620)
+        .overlay(alignment: .bottom) { UndoToastView(toast: undoToast) }
+        .animation(.easeOut(duration: 0.2), value: undoToast.notice?.id)
         .onDisappear {
             contextSaver.flush()
             editor.onNavigateToLink = nil
@@ -77,6 +90,12 @@ struct ContentView: View {
             if !hasSeenOnboarding { showOnboarding = true }
             editor.onNavigateToLink = { linkID in navigateToPage(withLinkID: linkID) }
             editor.onRequestAudioAppend = { id in appendAudioID = id }
+        }
+        // File > Go to Page… (Cmd O).
+        .focusedSceneValue(\.quickOpenAction, QuickOpenAction { showQuickOpen = true })
+        .sheet(isPresented: $showQuickOpen) {
+            QuickOpenView(onOpen: { navigateToPage(withLinkID: $0.linkID) },
+                          dismiss: { showQuickOpen = false })
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView { hasSeenOnboarding = true; showOnboarding = false }
@@ -127,6 +146,7 @@ struct ContentView: View {
                     Image(systemName: "sidebar.leading")
                 }
                 .help("Show or hide the sidebar")
+                .accessibilityLabel(Text("Toggle Sidebar"))
             }
             // The format/insert/share controls all act through `editor.textView`,
             // which spreadsheet pages never set - showing them there would let
@@ -156,6 +176,7 @@ struct ContentView: View {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(Text("Clear Search"))
                     }
                 }
                 .padding(.horizontal, 8)
@@ -187,6 +208,16 @@ struct ContentView: View {
             selectedPage = pages.first { $0.linkID == saved.page && !$0.isTrashed }
         }
         restoredSession = true
+    }
+
+    /// Section selection for the sidebar and tabs. Picks the section's page in
+    /// the same update, so the window redraws once with the new section and
+    /// its page instead of first showing the old page under the new section.
+    private var sectionSelection: Binding<NoteSection?> {
+        Binding(get: { selectedSection }, set: { section in
+            if let section, selectedPage?.section !== section { selectedPage = section.rootPages.first }
+            selectedSection = section
+        })
     }
 
     private func pruneDeletedSelection() {

@@ -1,63 +1,163 @@
 import AppKit
 
+/// Where a click on empty paper wants the next typed text to go. Nothing is
+/// written to the note until the person actually types or pastes, so stray
+/// clicks never leave blank lines, tabs or undo steps behind.
+struct CanvasPlacement {
+    enum Kind {
+        /// A blank line that gets indented to the click.
+        case blankLine(NSRange)
+        /// Right of the last visual line of a paragraph: a tab stop is added.
+        case afterLine(NSRange, end: Int)
+        /// Below all text: padding line breaks are added first.
+        case belowText(padding: String)
+    }
+
+    var kind: Kind
+    /// Indent in the same coordinates as `NSParagraphStyle.headIndent`.
+    var x: CGFloat
+    var minX: CGFloat
+    var maxX: CGFloat
+    /// Caret line in text-container coordinates.
+    var caretTop: CGFloat
+    var caretHeight: CGFloat
+    /// Real selection location while the placement is pending.
+    var anchor: Int
+    /// Note length when resolved; any edit makes the placement stale.
+    var length: Int
+}
+
 extension DaftarTextView {
-    /// Places an ordinary rich-text paragraph at an empty canvas location.
-    /// Using paragraph indentation and line breaks keeps text searchable,
-    /// undoable, and compatible with RTFD, history, backups and export.
+    /// Clicks this close to the left margin of a blank line are ordinary
+    /// clicks, not a request for an indent.
+    private static let canvasIndentSnap: CGFloat = 8
+
+    /// Shows the caret at an empty canvas location. The paragraph indent, tab
+    /// or line breaks that put text there are only added on the first edit
+    /// (`materializePendingCanvasPlacement`), keeping the result ordinary
+    /// rich text that is searchable, undoable and RTFD/export compatible.
     @discardableResult
     func placeInsertionPointOnCanvas(at point: NSPoint) -> Bool {
+        guard let placement = resolveCanvasPlacement(at: point) else { return false }
+        let font = (typingAttributes[.font] as? NSFont) ?? EditorController.defaultFont
+        var attributes = typingAttributes
+        attributes.removeValue(forKey: .attachment)
+        attributes.removeValue(forKey: .link)
+        attributes.removeValue(forKey: .paragraphStyle)
+        attributes[.font] = font
+
+        controller?.textView = self
+        window?.makeFirstResponder(self)
+        clearPendingCanvasPlacement()
+        setSelectedRange(NSRange(location: placement.anchor, length: 0))
+        // Keep the font the person was typing with; the indent is added later.
+        typingAttributes = attributes
+        pendingCanvasPlacement = placement
+        refreshCanvasCaret()
+        imageCanvas?.sync()
+        return true
+    }
+
+    /// Read-only hit test for `placeInsertionPointOnCanvas`.
+    func resolveCanvasPlacement(at point: NSPoint) -> CanvasPlacement? {
         guard allowsCanvasTyping, isEditable, let storage = textStorage,
-              let lm = layoutManager, let container = textContainer else { return false }
+              let lm = layoutManager, let container = textContainer else { return nil }
         lm.ensureLayout(for: container)
+        let padding = container.lineFragmentPadding
         let local = NSPoint(x: max(0, point.x - textContainerOrigin.x),
                             y: max(0, point.y - textContainerOrigin.y))
         let font = (typingAttributes[.font] as? NSFont) ?? EditorController.defaultFont
         let lineHeight = max(1, lm.defaultLineHeight(for: font))
-        let glyphs = lm.glyphRange(for: container)
-        var emptyLine: NSRange?
-        var occupiedLine: (range: NSRange, endX: CGFloat)?
-        lm.enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, glyphRange, stop in
+        let maxX = max(0, container.size.width - 32)
+        // Indents are measured from inside the line fragment padding.
+        let clickX = min(maxX, max(0, local.x - padding))
+        let string = storage.string as NSString
+        let isLineBreak: (Int) -> Bool = { string.character(at: $0) == 10 || string.character(at: $0) == 13 }
+
+        var emptyLine: (range: NSRange, rect: NSRect)?
+        var occupiedLine: (range: NSRange, rect: NSRect, endX: CGFloat)?
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: container)) { line, used, _, glyphRange, stop in
             guard local.y >= line.minY, local.y < line.maxY else { return }
             let characters = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            let text = (storage.string as NSString).substring(with: characters)
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                emptyLine = characters
+            if string.substring(with: characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                emptyLine = (characters, line)
             } else if local.x > used.maxX + 12 {
-                occupiedLine = (characters, used.maxX)
+                occupiedLine = (characters, line, used.maxX - padding)
             }
             stop.pointee = true
         }
+
+        if let emptyLine {
+            let x = clickX < Self.canvasIndentSnap ? 0 : clickX
+            return CanvasPlacement(kind: .blankLine(emptyLine.range), x: x, minX: 0, maxX: maxX,
+                                   caretTop: emptyLine.rect.maxY - min(lineHeight, emptyLine.rect.height),
+                                   caretHeight: min(lineHeight, emptyLine.rect.height),
+                                   anchor: emptyLine.range.location, length: storage.length)
+        }
+        if let occupiedLine {
+            var end = NSMaxRange(occupiedLine.range)
+            while end > occupiedLine.range.location, isLineBreak(end - 1) { end -= 1 }
+            // Only append to the last visual line of a paragraph: inserting a
+            // tab into a wrapped line would reflow existing words elsewhere.
+            guard end == storage.length || isLineBreak(end) else { return nil }
+            let minX = min(maxX, occupiedLine.endX + 1)
+            return CanvasPlacement(kind: .afterLine(occupiedLine.range, end: end), x: max(minX, clickX),
+                                   minX: minX, maxX: maxX,
+                                   caretTop: occupiedLine.rect.maxY - min(lineHeight, occupiedLine.rect.height),
+                                   caretHeight: min(lineHeight, occupiedLine.rect.height),
+                                   anchor: end, length: storage.length)
+        }
+
+        // Below all text. The empty line after a final line break is not a
+        // line fragment, so start from it when it exists.
+        let hasExtraLine = lm.extraLineFragmentTextContainer === container
+        let textBottom = hasExtraLine ? lm.extraLineFragmentRect.minY : lm.usedRect(for: container).maxY
+        guard storage.length == 0 || local.y >= textBottom else { return nil }
+        let lines = min(5000, max(0, Int((local.y - textBottom) / lineHeight)))
+        let separator = hasExtraLine || storage.length == 0 ? "" : "\n"
+        // Without a trailing line break the separator itself starts the first new line.
+        let x = clickX < Self.canvasIndentSnap ? 0 : clickX
+        return CanvasPlacement(kind: .belowText(padding: separator + String(repeating: "\n", count: lines)),
+                               x: x, minX: 0, maxX: maxX,
+                               caretTop: textBottom + CGFloat(lines) * lineHeight, caretHeight: lineHeight,
+                               anchor: storage.length, length: storage.length)
+    }
+
+    /// Writes a pending placement into the note right before the first edit.
+    /// Returns true when the selection moved to the placed caret.
+    @discardableResult
+    func materializePendingCanvasPlacement() -> Bool {
+        guard let placement = pendingCanvasPlacement else { return false }
+        // Cleared first: the insertions below re-enter this method.
+        pendingCanvasPlacement = nil
+        guard let storage = textStorage, let lm = layoutManager, let container = textContainer,
+              storage.length == placement.length,
+              selectedRange() == NSRange(location: placement.anchor, length: 0) else { return false }
         var attributes = typingAttributes
         attributes.removeValue(forKey: .attachment)
         attributes.removeValue(forKey: .link)
         let style = NSMutableParagraphStyle()
-        let x = min(local.x, max(0, container.size.width - 32))
-        style.firstLineHeadIndent = x
-        style.headIndent = x
+        style.firstLineHeadIndent = placement.x
+        style.headIndent = placement.x
         attributes[.paragraphStyle] = style
-        attributes[.font] = font
+        let string = storage.string as NSString
 
-        controller?.textView = self
-        if let emptyLine {
+        switch placement.kind {
+        case .blankLine(let emptyLine):
+            guard placement.x > 0 else { break }
             // Change only whitespace on this line, never existing note text.
             var end = NSMaxRange(emptyLine)
-            let string = storage.string as NSString
             while end > emptyLine.location, (string.character(at: end - 1) == 10 || string.character(at: end - 1) == 13) { end -= 1 }
-            // Keep the line break but give it the indent, so the caret is drawn
-            // at the click point and arrow keys can nudge it from there.
-            let terminator = string.substring(with: NSRange(location: end, length: NSMaxRange(emptyLine) - end))
-            insertText(NSAttributedString(string: terminator, attributes: attributes), replacementRange: emptyLine)
+            if emptyLine.length > 0 {
+                // Keep the line break but give it the indent.
+                let terminator = string.substring(with: NSRange(location: end, length: NSMaxRange(emptyLine) - end))
+                insertText(NSAttributedString(string: terminator, attributes: attributes), replacementRange: emptyLine)
+            }
             setSelectedRange(NSRange(location: emptyLine.location, length: 0))
             typingAttributes = attributes
-        } else if let occupiedLine {
-            let string = storage.string as NSString
-            var end = NSMaxRange(occupiedLine.range)
-            while end > occupiedLine.range.location, (string.character(at: end - 1) == 10 || string.character(at: end - 1) == 13) { end -= 1 }
-            // Only append to the last visual line of a paragraph: inserting a
-            // tab into a wrapped line would reflow existing words elsewhere.
-            guard end == storage.length || string.character(at: end) == 10 || string.character(at: end) == 13 else { return false }
-            let existing = (storage.attribute(.paragraphStyle, at: occupiedLine.range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-            let preceding = NSRange(location: occupiedLine.range.location, length: end - occupiedLine.range.location)
+        case .afterLine(let line, let end):
+            let existing = (storage.attribute(.paragraphStyle, at: line.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+            let preceding = NSRange(location: line.location, length: end - line.location)
             let lastTab = string.range(of: "\t", options: .backwards, range: preceding)
             var lastUsedStop: CGFloat = -1
             if lastTab.location != NSNotFound {
@@ -65,36 +165,50 @@ extension DaftarTextView {
                 lastUsedStop = lm.boundingRect(forGlyphRange: tabGlyphs, in: container).maxX - container.lineFragmentPadding + 0.5
             }
             existing.tabStops = existing.tabStops.filter { $0.location <= lastUsedStop }
-            existing.addTabStop(NSTextTab(textAlignment: .left, location: x))
+            existing.addTabStop(NSTextTab(textAlignment: .left, location: placement.x))
             attributes[.paragraphStyle] = existing
             // AppKit takes tab stops from the beginning of the paragraph,
             // so update the paragraph as one undoable attributed replacement.
-            let paragraphRange = string.paragraphRange(for: NSRange(location: occupiedLine.range.location, length: 0))
+            let paragraphRange = string.paragraphRange(for: NSRange(location: line.location, length: 0))
             let paragraph = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: paragraphRange))
             paragraph.insert(NSAttributedString(string: "\t", attributes: attributes), at: end - paragraphRange.location)
             paragraph.addAttribute(.paragraphStyle, value: existing, range: NSRange(location: 0, length: paragraph.length))
             insertText(paragraph, replacementRange: paragraphRange)
             setSelectedRange(NSRange(location: end + 1, length: 0))
             typingAttributes = attributes
-        } else {
-            let used = lm.usedRect(for: container)
-            guard storage.length == 0 || local.y >= used.maxY else { return false }
-            let hasTrailingNewline = storage.string.hasSuffix("\n")
-            let baselineY: CGFloat = storage.length == 0 ? 0 : used.maxY
-            let lines = min(5000, max(0, Int((local.y - baselineY) / lineHeight)))
-            let separator = storage.length > 0 && !hasTrailingNewline ? "\n" : ""
-            let padding = separator + String(repeating: "\n", count: lines)
-            setSelectedRange(NSRange(location: storage.length, length: 0))
+        case .belowText(let padding):
             if !padding.isEmpty {
                 var blankAttributes = attributes
                 blankAttributes[.paragraphStyle] = NSParagraphStyle.default
-                insertText(NSAttributedString(string: padding, attributes: blankAttributes), replacementRange: selectedRange())
+                insertText(NSAttributedString(string: padding, attributes: blankAttributes),
+                           replacementRange: NSRange(location: storage.length, length: 0))
             }
+            setSelectedRange(NSRange(location: storage.length, length: 0))
             typingAttributes = attributes
         }
-        window?.makeFirstResponder(self)
         imageCanvas?.sync()
         return true
+    }
+
+    /// Drops a pending placement without touching the note.
+    func clearPendingCanvasPlacement() {
+        guard pendingCanvasPlacement != nil else { return }
+        pendingCanvasPlacement = nil
+        refreshCanvasCaret()
+    }
+
+    /// Caret rect for a pending placement, in view coordinates.
+    var pendingCanvasCaretRect: NSRect? {
+        guard let placement = pendingCanvasPlacement, let container = textContainer else { return nil }
+        return NSRect(x: textContainerOrigin.x + container.lineFragmentPadding + placement.x,
+                      y: textContainerOrigin.y + placement.caretTop,
+                      width: 1, height: placement.caretHeight)
+    }
+
+    /// Redraws so the caret moves between AppKit's spot and a pending one.
+    func refreshCanvasCaret() {
+        setNeedsDisplay(visibleRect, avoidAdditionalLayout: true)
+        updateInsertionPointStateAndRestartTimer(true)
     }
 }
 
@@ -133,6 +247,21 @@ extension DaftarTextView {
         let paragraph = string.paragraphRange(for: selection)
         let font = (typingAttributes[.font] as? NSFont) ?? EditorController.defaultFont
         let step = max(1, (" " as NSString).size(withAttributes: [.font: font]).width) * (large ? 8 : 1)
+
+        // A caret that is only shown (nothing typed yet) just moves on screen.
+        if var placement = pendingCanvasPlacement {
+            let newX = min(placement.maxX, max(placement.minX, placement.x + (forward ? step : -step)))
+            guard newX != placement.x else {
+                // Past the left edge: hand back to ordinary navigation.
+                if forward { return true }
+                clearPendingCanvasPlacement()
+                return false
+            }
+            placement.x = newX
+            pendingCanvasPlacement = placement
+            refreshCanvasCaret()
+            return true
+        }
         let maxX = max(0, container.size.width - 32)
         let isBlank: (NSRange) -> Bool = {
             string.substring(with: $0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -151,14 +151,17 @@ final class EditorControllerTests: XCTestCase {
 
     func testSetImageSizeActuallyChangesAttachmentBounds() {
         let (controller, _, storage) = makeHarness(containerWidth: 600)
+        let previous = UserDefaults.standard.object(forKey: AppSettings.defaultImageSize)
+        defer { UserDefaults.standard.set(previous, forKey: AppSettings.defaultImageSize) }
+        UserDefaults.standard.set("medium", forKey: AppSettings.defaultImageSize)
         controller.insertImage(data: makeTestImagePNG(width: 1000, height: 600), filename: "test.png")
 
         guard let attachment = storage.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment else {
             XCTFail("expected an image attachment at location 0")
             return
         }
-        // Insert clamps to the 520pt default cap, not the raw 1000pt image size.
-        XCTAssertEqual(attachment.bounds.width, 520, accuracy: 0.5)
+        // Insert keeps the image within the 600pt page, not its raw 1000pt size.
+        XCTAssertEqual(attachment.bounds.width, 600, accuracy: 0.5)
 
         controller.setImageSize(at: NSRange(location: 0, length: 1), to: .original)
 
@@ -222,5 +225,37 @@ final class EditorControllerTests: XCTestCase {
         let secondGlyphIndex = (storage.string as NSString).range(of: "\u{2611}").location
         let secondLink = storage.attribute(.link, at: secondGlyphIndex, effectiveRange: nil) as? URL
         XCTAssertEqual(secondLink?.absoluteString, "daftar://checklist-toggle")
+    }
+
+    func testInsertedImagesUseTheDefaultSizeSetting() {
+        let key = AppSettings.defaultImageSize
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(previous, forKey: key) }
+        for (setting, expected) in [("small", 150.0), ("medium", 300.0), ("large", 450.0)] {
+            UserDefaults.standard.set(setting, forKey: key)
+            let (controller, _, storage) = makeHarness(containerWidth: 600)
+            controller.insertImage(data: makeTestImagePNG(width: 300, height: 200), filename: "photo.png")
+            let attachment = storage.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment
+            XCTAssertEqual(attachment?.bounds.width ?? 0, expected, accuracy: 0.5, "\(setting): 50% / 100% / 150% of 300pt")
+            XCTAssertEqual(attachment?.bounds.height ?? 0, expected * 200 / 300, accuracy: 0.5, "\(setting) keeps the aspect ratio")
+        }
+    }
+
+    func testDefaultImageSizeStaysWithinThePageAndFallsBackSafely() {
+        let photo = NSSize(width: 1000, height: 500)
+        XCTAssertEqual(EditorController.insertedImageSize(for: photo, containerWidth: 600, size: .small).width, 500, accuracy: 0.5)
+        XCTAssertEqual(EditorController.insertedImageSize(for: photo, containerWidth: 600, size: .large).width, 600, accuracy: 0.5,
+                       "never wider than the page")
+        XCTAssertEqual(EditorController.insertedImageSize(for: photo, containerWidth: 0, size: .medium).width, 520, accuracy: 0.5,
+                       "before layout, 520pt stands in for the page")
+        XCTAssertEqual(EditorController.insertedImageSize(for: .zero, containerWidth: 600, size: .small), .zero, "empty images don't divide by zero")
+
+        let key = AppSettings.defaultImageSize
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(previous, forKey: key) }
+        UserDefaults.standard.removeObject(forKey: key)
+        XCTAssertEqual(AppSettings.imageSize, .medium, "original size when never set")
+        UserDefaults.standard.set("garbage", forKey: key)
+        XCTAssertEqual(AppSettings.imageSize, .medium)
     }
 }
