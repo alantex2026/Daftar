@@ -10,8 +10,11 @@ final class SectionLockStore: ObservableObject {
 
     private var lockObservers: [(NotificationCenter, NSObjectProtocol)] = []
 
-    init(authenticate: @escaping Authenticate = SectionLockStore.authenticateOwner) {
-        self.authenticate = authenticate
+    /// `nil` uses Touch ID / the Mac password. (Resolved here rather than as
+    /// a default argument: Xcode 16's Swift rejects calling a main-actor
+    /// method from a default argument.)
+    init(authenticate: Authenticate? = nil) {
+        self.authenticate = authenticate ?? { reason, completion in Self.authenticateOwner(reason, completion: completion) }
         // Walking away from the Mac shouldn't leave private sections open:
         // relock them when it sleeps, its display sleeps, or the screen locks.
         let workspace = NSWorkspace.shared.notificationCenter

@@ -481,7 +481,8 @@ struct RichTextEditor: NSViewRepresentable {
         func undoManager(for view: NSTextView) -> UndoManager? { undoManager }
         weak var textView: NSTextView?
         private var showsSearchHighlight = false
-        private var highlightObserver: NSObjectProtocol?
+        /// Only read again in `deinit`, which isn't main-actor isolated.
+        nonisolated(unsafe) private var highlightObserver: NSObjectProtocol?
 
         /// Highlights the search that opened this page (see `SearchHighlight`).
         func applyPendingSearchHighlight() {
