@@ -1,8 +1,8 @@
 //  NotebookMarkdownIO.swift
 //  Notebook-level Markdown export/import: walks the Notebook/Section/Page
-//  tree on the way out, and a chosen folder on the way in. Shares one
-//  convention in both directions so a notebook Daftar exported itself
-//  round-trips cleanly:
+//  tree on the way out, and a chosen folder on the way in. A versioned
+//  .daftar-notebook.json companion preserves complete content and hierarchy
+//  for restoration; other folders are imported as ordinary Markdown pages.
 //
 //      Section/
 //        Simple Page.md
@@ -10,17 +10,20 @@
 //          Page With Sub-pages.md   <- that page's own content
 //          Sub-page.md
 //          assets/
-//            1-photo.png
+//            photo.png
 
 import AppKit
 import SwiftData
 
+@MainActor
 enum NotebookMarkdownIO {
 
     enum IOError: LocalizedError {
         case nothingToImport
+        case lockedSection
         var errorDescription: String? {
             switch self {
+            case .lockedSection: return "Unlock every protected section before exporting this notebook."
             case .nothingToImport: return "That folder doesn't contain any Markdown files."
             }
         }
@@ -28,12 +31,23 @@ enum NotebookMarkdownIO {
 
     // MARK: - Export
 
-    static func export(_ notebook: Notebook, to destinationFolder: URL) throws {
-        let notebookFolder = try uniqueURL(baseName: sanitize(notebook.name), extension: nil, in: destinationFolder)
-        try FileManager.default.createDirectory(at: notebookFolder, withIntermediateDirectories: true)
-        for section in notebook.topLevelSections {
-            try exportSection(section, into: notebookFolder)
+    @discardableResult
+    static func export(_ notebook: Notebook, to destinationFolder: URL, locks: SectionLockStore) throws -> URL {
+        // Check the whole tree before creating any files, including empty locked groups.
+        func authorize(_ section: NoteSection) throws {
+            guard locks.isUnlocked(section) else { throw IOError.lockedSection }
+            for child in section.sortedChildren { try authorize(child) }
         }
+        for section in notebook.topLevelSections { try authorize(section) }
+        let notebookFolder = try uniqueURL(baseName: sanitize(notebook.name), extension: nil, in: destinationFolder)
+        let staging = destinationFolder.appendingPathComponent(".daftar-export-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        for section in notebook.topLevelSections { try exportSection(section, into: staging) }
+        let manifest = try JSONEncoder().encode(NotebookArchive(notebook))
+        try manifest.write(to: staging.appendingPathComponent(NotebookArchive.filename), options: .atomic)
+        try FileManager.default.moveItem(at: staging, to: notebookFolder)
+        return notebookFolder
     }
 
     private static func exportSection(_ section: NoteSection, into parentFolder: URL) throws {
@@ -67,20 +81,44 @@ enum NotebookMarkdownIO {
     }
 
     private static func writePageFile(_ page: Page, to fileURL: URL, assetsFolder: URL) throws {
-        let attributed = decode(page.contentData)
-        var assetIndex = 0
-        var assetsFolderReady = false
-        let body = MarkdownConverter.markdown(from: attributed) { data, suggestedName in
-            if !assetsFolderReady {
-                assetsFolderReady = (try? FileManager.default.createDirectory(
-                    at: assetsFolder, withIntermediateDirectories: true)) != nil
+        let body: String
+        if page.kind == .spreadsheet {
+            let sheet = try PageContentCodec.spreadsheet(page.spreadsheetData)
+            // Keep raw formulas readable in Markdown; the manifest preserves exact types and dimensions.
+            func escape(_ text: String) -> String {
+                text.replacingOccurrences(of: "|", with: "\\|")
+                    .replacingOccurrences(of: "\n", with: "<br>")
             }
-            assetIndex += 1
-            let ext = (suggestedName as NSString).pathExtension
-            let base = sanitize((suggestedName as NSString).deletingPathExtension)
-            let fileName = "\(assetIndex)-\(base)" + (ext.isEmpty ? "" : ".\(ext)")
-            guard (try? data.write(to: assetsFolder.appendingPathComponent(fileName))) != nil else { return nil }
-            return "assets/\(fileName)"
+            // Built in small typed steps: as one expression, Xcode 16's type
+            // checker gave up on it ("unable to type-check ... in reasonable time").
+            func tableRow(_ cells: [String]) -> String { "| " + cells.joined(separator: " | ") + " |" }
+            let headers: [String] = (0..<sheet.columns).map { String(CellReference.name(row: 0, column: $0).dropLast()) }
+            let rule: [String] = Array(repeating: "---", count: sheet.columns)
+            var lines: [String] = [tableRow(headers), tableRow(rule)]
+            for row in 0..<sheet.rows {
+                let cells: [String] = (0..<sheet.columns).map { escape(sheet.cells[CellReference.name(row: row, column: $0)] ?? "") }
+                lines.append(tableRow(cells))
+            }
+            body = lines.joined(separator: "\n")
+        } else {
+            let attributed = try PageContentCodec.richText(page.contentData)
+            var assetError: Error?
+            body = MarkdownConverter.markdown(from: attributed) { data, suggestedName in
+                guard assetError == nil else { return nil }
+                do {
+                    try FileManager.default.createDirectory(at: assetsFolder, withIntermediateDirectories: true)
+                    let ext = (suggestedName as NSString).pathExtension
+                    let base = sanitize((suggestedName as NSString).deletingPathExtension)
+                    let assetURL = try uniqueURL(baseName: base, extension: ext.isEmpty ? nil : ext, in: assetsFolder)
+                    try data.write(to: assetURL, options: .atomic)
+                    let escapedName = assetURL.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "()#?"))) ?? assetURL.lastPathComponent
+                    return "assets/\(escapedName)"
+                } catch {
+                    assetError = error
+                    return nil
+                }
+            }
+            if let assetError { throw assetError }
         }
         let content = "# \(page.displayTitle)\n\n\(body)"
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -88,11 +126,15 @@ enum NotebookMarkdownIO {
 
     // MARK: - Import
 
-    /// Imports a folder as a new notebook with one section, named after the
-    /// folder. Each `.md` file becomes a page; each subfolder becomes a page
-    /// with sub-pages, using the same convention `export` writes.
+    /// Daftar exports restore from their self-contained manifest. Without one,
+    /// import ordinary Markdown into a single section, treating folders as pages.
     @discardableResult
     static func importFolder(_ folderURL: URL, context: ModelContext) throws -> Notebook {
+        let manifestURL = folderURL.appendingPathComponent(NotebookArchive.filename)
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            let archive = try JSONDecoder().decode(NotebookArchive.self, from: Data(contentsOf: manifestURL))
+            return try archive.restore(context: context)
+        }
         let fm = FileManager.default
         let entries = try fm.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         guard entries.contains(where: { $0.pathExtension.lowercased() == "md" || $0.hasDirectoryPath }) else {
@@ -179,14 +221,6 @@ enum NotebookMarkdownIO {
 
     // MARK: - Shared helpers
 
-    private static func decode(_ data: Data?) -> NSAttributedString {
-        guard let data, let attributed = try? NSAttributedString(
-            data: data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil) else {
-            return NSAttributedString(string: "")
-        }
-        return attributed
-    }
-
     private static func encode(_ attributed: NSAttributedString) -> Data? {
         let full = NSRange(location: 0, length: attributed.length)
         return try? attributed.data(from: full, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
@@ -196,7 +230,7 @@ enum NotebookMarkdownIO {
         let invalid = CharacterSet(charactersIn: "/:\\")
         let result = name.components(separatedBy: invalid).joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return result.isEmpty ? "Untitled" : result
+        return result.isEmpty || result == "." || result == ".." || result == "assets" ? "Untitled" : result
     }
 
     /// Appends " 2", " 3", etc. if something with this name already exists,

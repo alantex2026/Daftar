@@ -14,6 +14,7 @@ struct TrashView: View {
     @Query private var sections: [NoteSection]
     @Query private var pages: [Page]
 
+    @AppStorage(AppSettings.autoEmptyTrashEnabled) private var autoEmpties = true
     @State private var pendingDelete: Row?
     @State private var confirmEmptyAll = false
 
@@ -76,7 +77,9 @@ struct TrashView: View {
                 .font(.system(size: 30))
                 .foregroundStyle(.secondary)
             Text("Trash Is Empty").font(.system(size: 14, weight: .medium))
-            Text("Deleted notebooks, sections, and pages stay here until you empty the trash.")
+            Text(autoEmpties
+                 ? "Deleted notebooks, sections, and pages stay here for \(TrashMaintenance.retentionDays) days, then are removed. You can turn this off in Settings."
+                 : "Deleted notebooks, sections, and pages stay here until you empty the trash.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -90,7 +93,7 @@ struct TrashView: View {
             icon(for: row.kind)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.name).font(.system(size: 14, weight: .medium)).lineLimit(1)
-                Text("Deleted \(row.deletedAt.formatted(.relative(presentation: .named)))")
+                Text(subtitle(for: row))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -150,47 +153,35 @@ struct TrashView: View {
         return (nb + sec + pg).sorted { $0.deletedAt > $1.deletedAt }
     }
 
+    /// "Deleted yesterday · removed in 29 days" when the Trash empties itself.
+    private func subtitle(for row: Row) -> String {
+        let deleted = String(localized: "Deleted \(row.deletedAt.formatted(.relative(presentation: .named)))")
+        guard autoEmpties else { return deleted }
+        let removal = Calendar.current.date(byAdding: .day, value: TrashMaintenance.retentionDays, to: row.deletedAt) ?? row.deletedAt
+        let days = max(0, Calendar.current.dateComponents([.day], from: Date(), to: removal).day ?? 0)
+        let left = switch days {
+        case 0: String(localized: "removed at next launch")
+        case 1: String(localized: "removed tomorrow")
+        default: String(localized: "removed in \(days) days")
+        }
+        return deleted + " \u{00B7} " + left
+    }
+
     // MARK: Actions
 
-    /// Restoring also restores any trashed ancestor, so the item is
-    /// actually reachable again instead of quietly staying hidden.
     private func restore(_ row: Row) {
         switch row.kind {
-        case .notebook(let n):
-            n.deletedAt = nil
-        case .section(let s):
-            s.deletedAt = nil
-            restoreAncestors(of: s)
-        case .page(let p):
-            p.deletedAt = nil
-            restoreAncestors(of: p)
-        }
-    }
-
-    private func restoreAncestors(of section: NoteSection) {
-        if let parent = section.parent {
-            parent.deletedAt = nil
-            restoreAncestors(of: parent)
-        }
-        section.notebook?.deletedAt = nil
-    }
-
-    private func restoreAncestors(of page: Page) {
-        if let parent = page.parent {
-            parent.deletedAt = nil
-            restoreAncestors(of: parent)
-        }
-        if let section = page.section {
-            section.deletedAt = nil
-            restoreAncestors(of: section)
+        case .notebook(let n): LibraryActions.restore(n)
+        case .section(let s): LibraryActions.restore(s)
+        case .page(let p): LibraryActions.restore(p)
         }
     }
 
     private func deletePermanently(_ row: Row) {
         switch row.kind {
-        case .notebook(let n): context.delete(n)
-        case .section(let s): context.delete(s)
-        case .page(let p): context.delete(p)
+        case .notebook(let n): LibraryActions.deletePermanently(n, context: context)
+        case .section(let s): LibraryActions.deletePermanently(s, context: context)
+        case .page(let p): LibraryActions.deletePermanently(p, context: context)
         }
     }
 }

@@ -1,5 +1,5 @@
 //  SidebarView.swift
-//  Column 1: RECENTS at the top, then the NOTEBOOKS tree.
+//  Column 1: pinned pages and the notebook tree.
 //
 //  The tree is flattened into one simple list with a `depth` number,
 //  because a view that contains itself forever is hard for SwiftUI.
@@ -12,39 +12,37 @@ struct SidebarView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.layoutDirection) private var layoutDirection
     @EnvironmentObject private var sectionLock: SectionLockStore
+    @EnvironmentObject private var folderSync: FolderSync
+    @EnvironmentObject private var undoToast: UndoToast
     @Query(sort: \Notebook.sortIndex) private var notebooks: [Notebook]
-    @Query(sort: \Page.lastOpenedAt, order: .reverse) private var allPages: [Page]
-    @Query private var allSections: [NoteSection]
+    // Narrow queries: the sidebar is always on screen and every query here
+    // re-runs on every autosave, so never fetch the whole page table.
+    @Query(filter: #Predicate<Page> { $0.pinnedAt != nil }, sort: \Page.pinnedAt, order: .reverse)
+    private var pinnedPages: [Page]
+    @Query(filter: #Predicate<Page> { $0.deletedAt != nil }) private var trashedPages: [Page]
+    @Query(filter: #Predicate<NoteSection> { $0.deletedAt != nil }) private var trashedSections: [NoteSection]
 
     @Binding var selectedSection: NoteSection?
     @Binding var selectedPage: Page?
     @Binding var openTabs: [NoteSection]
 
-    @State private var showRecents = true
     @State private var showPinned = true
     @State private var renamingID: PersistentIdentifier?
-    @State private var draftName = ""
     @State private var showTrash = false
     @State private var draggedNotebook: Notebook?
     @State private var draggedSection: NoteSection?
+    /// The section a dragged page is hovering over, for its highlight.
+    @State private var pageDropSectionID: PersistentIdentifier?
     @State private var ioError: String?
 
-    private var recents: [Page] {
-        PerfLog.measure("SidebarView.recents (allPages.count=\(allPages.count))") {
-            allPages.filter { !$0.isTrashed && $0.lastOpenedAt > Date.distantPast && sectionLock.canShow($0) }
-                .prefix(6).map { $0 }
-        }
-    }
-
     private var pinned: [Page] {
-        allPages.filter { !$0.isTrashed && $0.isPinned && sectionLock.canShow($0) }
-            .sorted { $0.pinnedAt! > $1.pinnedAt! }
+        pinnedPages.filter { !$0.isTrashed && sectionLock.canShow($0) }
     }
 
     private var trashedCount: Int {
         notebooks.filter { $0.deletedAt != nil }.count
-        + allSections.filter { $0.deletedAt != nil }.count
-        + allPages.filter { $0.deletedAt != nil }.count
+        + trashedSections.count
+        + trashedPages.count
     }
 
     var body: some View {
@@ -54,16 +52,10 @@ struct SidebarView: View {
                     if !pinned.isEmpty {
                         pinnedHeader
                         if showPinned {
-                            ForEach(pinned) { page in recentRow(page, icon: "pin.fill") }
+                            ForEach(pinned) { page in pinnedRow(page) }
                             Color.clear.frame(height: 14)
                             Divider().opacity(0.25)
                         }
-                    }
-                    recentsHeader
-                    if showRecents {
-                        ForEach(recents) { page in recentRow(page) }
-                        Color.clear.frame(height: 14)
-                        Divider().opacity(0.25)
                     }
                     notebooksHeader
                     ForEach(treeItems) { item in treeRow(item) }
@@ -74,7 +66,7 @@ struct SidebarView: View {
             Divider().opacity(0.25)
             footer
         }
-        .background(AppTheme.sidebar)
+        .sidebarBackground()
         .alert("Something Went Wrong",
                isPresented: Binding(get: { ioError != nil }, set: { if !$0 { ioError = nil } })) {
             Button("OK") {}
@@ -99,26 +91,7 @@ struct SidebarView: View {
                     .foregroundStyle(AppTheme.sidebarLabel)
             }
             .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
-    }
-
-    private var recentsHeader: some View {
-        HStack {
-            Text("RECENTS")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(AppTheme.sidebarLabel)
-            Spacer()
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showRecents.toggle() }
-            } label: {
-                Image(systemName: AppTheme.disclosureIcon(isOpen: showRecents, layoutDirection: layoutDirection))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(AppTheme.sidebarLabel)
-            }
-            .buttonStyle(.plain)
+            .accessibilityLabel(Text(showPinned ? "Collapse Pinned" : "Expand Pinned"))
         }
         .padding(.horizontal, 14)
         .padding(.top, 12)
@@ -146,6 +119,8 @@ struct SidebarView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .help("New notebook and import")
+            .accessibilityLabel(Text("Add Notebook"))
         }
         .padding(.horizontal, 14)
         .padding(.top, 16)
@@ -154,9 +129,9 @@ struct SidebarView: View {
 
     // MARK: Rows
 
-    private func recentRow(_ page: Page, icon: String = "doc.text") -> some View {
+    private func pinnedRow(_ page: Page) -> some View {
         HStack(spacing: 9) {
-            Image(systemName: icon)
+            Image(systemName: "pin.fill")
                 .font(.system(size: 13))
                 .foregroundStyle(AppTheme.sidebarLabel)
             Text(page.displayTitle)
@@ -167,8 +142,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
-        .background(selectedPage === page ? AppTheme.sidebarRowOn : Color.clear)
-        .animation(.easeInOut(duration: 0.15), value: selectedPage)
+        .selectionBackground(selectedPage === page, color: AppTheme.sidebarRowOn)
         .contentShape(Rectangle())
         .onTapGesture { open(page) }
         .contextMenu {
@@ -223,14 +197,14 @@ struct SidebarView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(AppTheme.sidebarLabel)
                 }
-                Text("\(section.totalPageCount)")
+                Text("\(item.pageCount)")
                     .font(.system(size: 12))
                     .foregroundStyle(AppTheme.sidebarLabel)
             }
             .padding(.leading, 12 + CGFloat(item.depth - 1) * 15)
             .padding(.trailing, 12)
             .padding(.vertical, 6)
-            .background(selectedSection === section ? AppTheme.sidebarRowOn : Color.clear)
+            .selectionBackground(selectedSection === section, color: AppTheme.sidebarRowOn)
             .contentShape(Rectangle())
             .onSingleAndDoubleTap(single: {
                 if section.isGroup { section.isExpanded.toggle() }
@@ -239,11 +213,30 @@ struct SidebarView: View {
                 startRename(section.persistentModelID, section.name)
             })
             .contextMenu { sectionMenu(section) }
+            .overlay {
+                if pageDropSectionID == section.persistentModelID {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(AppTheme.controlAccent, lineWidth: 2)
+                        .padding(.horizontal, 6)
+                }
+            }
             .onDrag {
                 draggedSection = section
                 return NSItemProvider(item: NSString(string: section.name), typeIdentifier: UTType.daftarSection.identifier)
             }
-            .onDrop(of: [UTType.daftarSection], isTargeted: nil) { _ in
+            // Sections reorder among themselves; a page dropped here moves into this section.
+            .onDrop(of: [UTType.daftarSection, UTType.daftarPage], isTargeted: Binding(
+                get: { pageDropSectionID == section.persistentModelID },
+                set: { targeted in
+                    if targeted, PageDrag.current != nil, !section.isGroup { pageDropSectionID = section.persistentModelID }
+                    else if !targeted, pageDropSectionID == section.persistentModelID { pageDropSectionID = nil }
+                })) { providers in
+                if let page = PageDrag.page(from: providers) {
+                    PageDrag.current = nil
+                    guard !section.isGroup else { return false }
+                    movePage(page, to: section)
+                    return true
+                }
                 guard let dragged = draggedSection else { return false }
                 reorderSections(dragged: dragged, target: section)
                 draggedSection = nil
@@ -260,6 +253,7 @@ struct SidebarView: View {
                 .frame(width: 12)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(isOpen ? "Collapse" : "Expand"))
     }
 
     @ViewBuilder
@@ -268,10 +262,9 @@ struct SidebarView: View {
                              weight: Font.Weight,
                              commit: @escaping (String) -> Void) -> some View {
         if renamingID == id {
-            TextField("Name", text: $draftName)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 14))
-                .onSubmit { commit(draftName); renamingID = nil }
+            RenameField("Name", original: text, onCommit: commit) {
+                if renamingID == id { renamingID = nil }
+            }
         } else {
             Text(text)
                 .font(.system(size: 14, weight: weight))
@@ -282,9 +275,22 @@ struct SidebarView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 12))
-            Text("Last Sync: \(Date().formatted(date: .omitted, time: .shortened))")
+            if folderSync.enabled {
+                Image(systemName: folderSync.needsAttention ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12))
+                Group {
+                    if folderSync.busy || folderSync.needsAttention {
+                        Text(folderSync.status)
+                    } else if let lastSync = folderSync.lastSync {
+                        Text("Last Sync: \(lastSync.formatted(date: .omitted, time: .shortened))")
+                    } else {
+                        Text(folderSync.status)
+                    }
+                }
                 .font(.system(size: 12))
+                .lineLimit(1)
+                .help(folderSync.status)
+            }
             Spacer()
             Button { showTrash = true } label: {
                 HStack(spacing: 4) {
@@ -294,6 +300,8 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Trash")
+            .accessibilityLabel(Text("Trash"))
+            .accessibilityValue(Text(trashedCount == 0 ? "Empty" : "\(trashedCount) items"))
         }
         .foregroundStyle(AppTheme.sidebarLabel)
         .padding(.horizontal, 14)
@@ -308,6 +316,8 @@ struct SidebarView: View {
         let id: PersistentIdentifier
         let kind: Kind
         let depth: Int
+        /// Live pages in a section, sub-sections included; 0 for notebooks.
+        var pageCount = 0
     }
 
     private var treeItems: [TreeItem] {
@@ -315,17 +325,32 @@ struct SidebarView: View {
             var result: [TreeItem] = []
             for notebook in notebooks where !notebook.isTrashed {
                 result.append(TreeItem(id: notebook.persistentModelID, kind: .notebook(notebook), depth: 0))
-                if notebook.isExpanded { append(notebook.topLevelSections, depth: 1, into: &result) }
+                guard notebook.isExpanded else { continue }
+                // Counted once per section here, instead of each row (and
+                // each enclosing group again) recounting on every redraw.
+                var counts: [ObjectIdentifier: Int] = [:]
+                for section in notebook.topLevelSections { _ = Self.countPages(in: section, into: &counts) }
+                append(notebook.topLevelSections, depth: 1, counts: counts, into: &result)
             }
             return result
         }
     }
 
-    private func append(_ sections: [NoteSection], depth: Int, into result: inout [TreeItem]) {
+    /// Live pages in `section` and everything inside it, recording each
+    /// section's total along the way.
+    static func countPages(in section: NoteSection, into counts: inout [ObjectIdentifier: Int]) -> Int {
+        let own = section.pages.reduce(0) { $0 + ($1.isTrashed ? 0 : 1) }
+        let total = section.sortedChildren.reduce(own) { $0 + countPages(in: $1, into: &counts) }
+        counts[ObjectIdentifier(section)] = total
+        return total
+    }
+
+    private func append(_ sections: [NoteSection], depth: Int, counts: [ObjectIdentifier: Int], into result: inout [TreeItem]) {
         for section in sections {
-            result.append(TreeItem(id: section.persistentModelID, kind: .section(section), depth: depth))
+            result.append(TreeItem(id: section.persistentModelID, kind: .section(section), depth: depth,
+                                   pageCount: counts[ObjectIdentifier(section)] ?? 0))
             if section.isGroup && section.isExpanded {
-                append(section.sortedChildren, depth: depth + 1, into: &result)
+                append(section.sortedChildren, depth: depth + 1, counts: counts, into: &result)
             }
         }
     }
@@ -349,7 +374,8 @@ struct SidebarView: View {
         Button("Delete Notebook", role: .destructive) {
             openTabs.removeAll { $0.notebook === notebook }
             if selectedSection?.notebook === notebook { selectedSection = nil; selectedPage = nil }
-            notebook.deletedAt = Date()
+            LibraryActions.trash(notebook)
+            undoToast.trashed(notebook.name) { LibraryActions.restore(notebook) }
         }
     }
 
@@ -379,7 +405,10 @@ struct SidebarView: View {
                 }
             }
         } else {
-            Button("Require Touch ID / Password") { section.isLocked = true }
+            Button("Require Touch ID / Password") {
+                sectionLock.lockNow(section)
+                section.isLocked = true
+            }
         }
         Menu("Color") {
             ForEach(PaletteColor.allCases) { c in
@@ -389,33 +418,27 @@ struct SidebarView: View {
         Menu("Move to Notebook") {
             ForEach(notebooks.filter { !$0.isTrashed }) { target in
                 Button(target.name) {
-                    section.parent = nil
-                    section.notebook = target
-                    section.sortIndex = target.nextSectionIndex
+                    sectionLock.requestUnlock(section, reason: "move this section") { success in
+                        guard success else { return }
+                        section.move(to: target)
+                        do { try context.save() }
+                        catch { ioError = "Couldn't save the move. \(error.localizedDescription)" }
+                    }
                 }
             }
         }
         Divider()
         Button("Delete Section", role: .destructive) {
-            openTabs.removeAll { isDescendant($0, of: section) }
-            if let selectedSection, isDescendant(selectedSection, of: section) {
+            openTabs.removeAll { $0.isWithin(section) }
+            if let selectedSection, selectedSection.isWithin(section) {
                 self.selectedSection = nil
                 selectedPage = nil
             }
-            section.deletedAt = Date()
+            LibraryActions.trash(section)
+            undoToast.trashed(section.name) { LibraryActions.restore(section) }
         }
     }
 
-    /// True if `candidate` is `section` itself or nested somewhere underneath it
-    /// (a section inside a Section Group that is being deleted).
-    private func isDescendant(_ candidate: NoteSection, of section: NoteSection) -> Bool {
-        var current: NoteSection? = candidate
-        while let c = current {
-            if c === section { return true }
-            current = c.parent
-        }
-        return false
-    }
 
     // MARK: Actions
 
@@ -436,11 +459,22 @@ struct SidebarView: View {
     }
 
     private func startRename(_ id: PersistentIdentifier, _ current: String) {
-        draftName = current
         renamingID = id
     }
 
     private func exportNotebook(_ notebook: Notebook) {
+        sectionLock.requestUnlock(sections: notebook.sections.filter { !$0.isTrashed },
+                                  reason: "export this notebook") { success in
+            guard success else { return }
+            performExport(notebook)
+        }
+    }
+
+    private func performExport(_ notebook: Notebook) {
+        guard SaveCoordinator.flushAll() else {
+            ioError = "Save your pending changes before exporting. Please retry."
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -449,8 +483,12 @@ struct SidebarView: View {
         panel.message = "Choose where to export \u{201C}\(notebook.name)\u{201D} as a folder of Markdown files."
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         do {
-            try NotebookMarkdownIO.export(notebook, to: destination)
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
+            guard SaveCoordinator.flushAll() else {
+                ioError = "Save your pending changes before exporting. Please retry."
+                return
+            }
+            let folder = try NotebookMarkdownIO.export(notebook, to: destination, locks: sectionLock)
+            NSWorkspace.shared.activateFileViewerSelecting([folder])
         } catch {
             ioError = "Couldn't export \u{201C}\(notebook.name)\u{201D}. \(error.localizedDescription)"
         }
@@ -472,36 +510,16 @@ struct SidebarView: View {
     }
 
     private func addNotebook() {
-        let notebook = Notebook(name: "New Notebook",
-                                colorName: PaletteColor.allCases.randomElement()!.rawValue,
-                                sortIndex: (notebooks.map(\.sortIndex).max() ?? -1) + 1)
-        context.insert(notebook)
-        let section = NoteSection(name: "New Section", sortIndex: 0)
-        section.notebook = notebook
-        context.insert(section)
-        selectedSection = section
+        selectedSection = LibraryActions.addNotebook(after: notebooks, context: context).section
     }
 
     private func addSection(to notebook: Notebook, isGroup: Bool) {
-        let section = NoteSection(name: isGroup ? "New Section Group" : "New Section",
-                                  colorName: PaletteColor.allCases.randomElement()!.rawValue,
-                                  sortIndex: notebook.nextSectionIndex,
-                                  isGroup: isGroup)
-        section.notebook = notebook
-        context.insert(section)
-        notebook.isExpanded = true
+        let section = LibraryActions.addSection(to: notebook, isGroup: isGroup, context: context)
         if !isGroup { selectedSection = section }
     }
 
     private func addSection(inside group: NoteSection) {
-        let section = NoteSection(name: "New Section",
-                                  colorName: PaletteColor.allCases.randomElement()!.rawValue,
-                                  sortIndex: (group.children.map(\.sortIndex).max() ?? -1) + 1)
-        section.notebook = group.notebook
-        section.parent = group
-        context.insert(section)
-        group.isExpanded = true
-        selectedSection = section
+        selectedSection = LibraryActions.addSection(inside: group, context: context)
     }
 
     private func setAllExpanded(_ open: Bool) {
@@ -511,32 +529,21 @@ struct SidebarView: View {
         }
     }
 
-    /// Reorders `dragged` to sit where `target` currently is among the
-    /// top-level notebooks. Trashed notebooks are excluded from the
-    /// reordered list rather than reassigned, so they keep their old
-    /// position if they're ever restored.
     private func reorderNotebooks(dragged: Notebook, target: Notebook) {
-        guard dragged !== target else { return }
-        var ordered = notebooks.filter { !$0.isTrashed }.sorted { $0.sortIndex < $1.sortIndex }
-        ordered.removeAll { $0 === dragged }
-        guard let targetIndex = ordered.firstIndex(where: { $0 === target }) else { return }
-        ordered.insert(dragged, at: targetIndex)
-        for (index, notebook) in ordered.enumerated() { notebook.sortIndex = index }
+        LibraryActions.reorderNotebooks(notebooks, moving: dragged, to: target)
     }
 
-    /// Reorders `dragged` to sit where `target` currently is, among their
-    /// shared siblings (same notebook, same parent group). Does nothing if
-    /// they aren't siblings - dragging only reorders, it doesn't move a
-    /// section to a different notebook or group.
+    /// A locked destination asks to be unlocked first, so a page can't be
+    /// dropped somewhere its owner can't then see it.
+    private func movePage(_ page: Page, to section: NoteSection) {
+        guard page.section !== section || page.parent != nil else { return }
+        sectionLock.requestUnlock(section, reason: "move this page to \u{201C}\(section.name)\u{201D}") { success in
+            guard success else { return }
+            LibraryActions.move(page, to: section)
+        }
+    }
+
     private func reorderSections(dragged: NoteSection, target: NoteSection) {
-        guard dragged !== target,
-              dragged.notebook === target.notebook,
-              dragged.parent === target.parent else { return }
-        let siblings = target.parent?.sortedChildren ?? target.notebook?.topLevelSections ?? []
-        var ordered = siblings
-        ordered.removeAll { $0 === dragged }
-        guard let targetIndex = ordered.firstIndex(where: { $0 === target }) else { return }
-        ordered.insert(dragged, at: targetIndex)
-        for (index, section) in ordered.enumerated() { section.sortIndex = index }
+        LibraryActions.reorderSections(moving: dragged, to: target)
     }
 }

@@ -22,17 +22,20 @@ struct TabBarView: View {
                         .frame(width: 22, height: 30)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text("Scroll to First Tab"))
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
+                    HStack(alignment: .bottom, spacing: 2) {
                         ForEach(openTabs) { section in
                             tab(section)
                                 .id(section.persistentModelID)
                         }
                     }
                     .padding(.horizontal, 2)
+                    // Tabs sit on the bottom edge so the active one runs into the paper.
+                    .frame(maxHeight: .infinity, alignment: .bottom)
                 }
-                .frame(height: 34)
+                .frame(height: 36)
 
                 Spacer(minLength: 8)
 
@@ -54,6 +57,7 @@ struct TabBarView: View {
                 .fixedSize()
                 .foregroundStyle(AppTheme.sidebarLabel)
                 .help("Open another section in a tab")
+                .accessibilityLabel(Text("Open Section in Tab"))
 
                 Button {
                     if let last = openTabs.last { withAnimation { proxy.scrollTo(last.persistentModelID) } }
@@ -64,6 +68,7 @@ struct TabBarView: View {
                         .frame(width: 22, height: 30)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text("Scroll to Last Tab"))
             }
         }
         .padding(.horizontal, 6)
@@ -78,35 +83,67 @@ struct TabBarView: View {
         .sorted { $0.name < $1.name }
     }
 
+    /// The active tab is cut from the paper itself, marked by a thin accent
+    /// line; inactive tabs are just text on the strip.
     private func tab(_ section: NoteSection) -> some View {
         let isActive = selectedSection === section
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 0,
+                                           bottomTrailingRadius: 0, topTrailingRadius: 8,
+                                           style: .continuous)
         return HStack(spacing: 6) {
             Text(section.name)
-                .font(.system(size: 14, weight: isActive ? .semibold : .regular))
-                .foregroundStyle(isActive ? Color.white : AppTheme.sidebarText.opacity(0.75))
+                .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? AppTheme.paperText : AppTheme.sidebarText.opacity(0.75))
                 .lineLimit(1)
+            // Two open sections called "Ideas" in different notebooks: say which is which.
+            if let notebook = section.notebook, Self.needsNotebookName(section, among: openTabs) {
+                Text(notebook.name)
+                    .font(.system(size: 11))
+                    .foregroundStyle((isActive ? AppTheme.paperText : AppTheme.sidebarText).opacity(0.5))
+                    .lineLimit(1)
+            }
             Button {
                 close(section)
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(isActive ? Color.white.opacity(0.9) : AppTheme.sidebarLabel)
+                    .foregroundStyle(isActive ? AppTheme.paperText.opacity(0.6) : AppTheme.sidebarLabel)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text("Close Tab"))
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(
-            UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 0,
-                                   bottomTrailingRadius: 0, topTrailingRadius: 8)
-                .fill(isActive ? AppTheme.tabActive : AppTheme.tabInactive)
-        )
+        .padding(.vertical, 8)
+        .background {
+            if isActive {
+                shape.fill(AppTheme.paper)
+                    .overlay(alignment: .top) {
+                        AppTheme.accent.frame(height: 2)
+                    }
+                    .clipShape(shape)
+            }
+        }
         .contentShape(Rectangle())
+        .help(Self.path(of: section))
         .onTapGesture { selectedSection = section }
         .contextMenu {
             Button("Close Tab") { close(section) }
             Button("Close Other Tabs") { openTabs = [section]; selectedSection = section }
         }
+    }
+
+    /// True when another open tab has the same name.
+    static func needsNotebookName(_ section: NoteSection, among tabs: [NoteSection]) -> Bool {
+        tabs.contains { $0 !== section && $0.name.localizedCaseInsensitiveCompare(section.name) == .orderedSame }
+    }
+
+    /// "Notebook › Group › Section", for the tab's tooltip.
+    static func path(of section: NoteSection) -> String {
+        var parts: [String] = []
+        var current: NoteSection? = section
+        while let item = current { parts.insert(item.name, at: 0); current = item.parent }
+        if let notebook = section.notebook { parts.insert(notebook.name, at: 0) }
+        return parts.joined(separator: " \u{203A} ")
     }
 
     private func close(_ section: NoteSection) {

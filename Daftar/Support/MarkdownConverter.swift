@@ -54,22 +54,32 @@ enum MarkdownConverter {
                 flushTable()
             }
 
-            let fontSize = (paraAttrs[.font] as? NSFont)?.pointSize.rounded() ?? 13
-            let headingPrefix: String
-            switch fontSize {
-            case 26: headingPrefix = "# "
-            case 20: headingPrefix = "## "
-            case 16: headingPrefix = "### "
-            default: headingPrefix = ""
-            }
+            var headingPrefix = (paraAttrs[.font] as? NSFont)
+                .flatMap(EditorController.TextStyle.headingLevel(of:))
+                .map { String(repeating: "#", count: $0) + " " } ?? ""
 
-            // Headings are already bold by being headings - if we also ran
-            // them through the usual bold-trait check, a Heading 1 (a bold
-            // font) would come out as "# **Title**" instead of "# Title".
-            var line = inlineMarkdown(for: attributed, in: subRange, writeAsset: writeAsset,
+            // List items: two spaces per nesting level, then the Markdown
+            // marker; the item's own text is converted separately so a
+            // marker is never mistaken for formatting.
+            let line: String
+            if let item = ListLine((attributed.string as NSString).substring(with: subRange)) {
+                headingPrefix = ""
+                let marker: String
+                switch item.kind {
+                case .bullet: marker = "- "
+                case .numbered(let number): marker = "\(number). "
+                case .checklist(let checked): marker = checked ? "- [x] " : "- [ ] "
+                }
+                let content = NSRange(location: subRange.location + item.markerLength,
+                                      length: max(0, subRange.length - item.markerLength))
+                line = String(repeating: "  ", count: item.level) + marker
+                    + inlineMarkdown(for: attributed, in: content, writeAsset: writeAsset)
+            } else {
+                // Headings are already bold by being headings - if we also ran
+                // them through the usual bold-trait check, a Heading 1 (a bold
+                // font) would come out as "# **Title**" instead of "# Title".
+                line = inlineMarkdown(for: attributed, in: subRange, writeAsset: writeAsset,
                                       suppressBold: !headingPrefix.isEmpty)
-            if line.hasPrefix("\u{2022} ") {
-                line = "- " + line.dropFirst(2)
             }
 
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -150,12 +160,19 @@ enum MarkdownConverter {
             var isOrderedItem = false
             var isUnorderedItem = false
             var ordinal: Int?
+            var listDepth = 0
+            // Components run innermost first, so the first list kind seen is
+            // the item's own; every list component is one level of nesting.
             for component in intent?.components ?? [] {
                 switch component.kind {
                 case .header(let level): headingLevel = level
-                case .orderedList: isOrderedItem = true
-                case .unorderedList: isUnorderedItem = true
-                case .listItem(let n): ordinal = n
+                case .orderedList:
+                    if !isOrderedItem && !isUnorderedItem { isOrderedItem = true }
+                    listDepth += 1
+                case .unorderedList:
+                    if !isOrderedItem && !isUnorderedItem { isUnorderedItem = true }
+                    listDepth += 1
+                case .listItem(let n): if ordinal == nil { ordinal = n }
                 default: break
                 }
             }
@@ -188,10 +205,19 @@ enum MarkdownConverter {
             }
 
             var runText = substring
-            if isOrderedItem, let ordinal, result.length == 0 || previousIntent != intent {
-                runText = "\(ordinal). " + runText
-            } else if isUnorderedItem, result.length == 0 || previousIntent != intent {
-                runText = "\u{2022} " + runText
+            let startsItem = result.length == 0 || previousIntent != intent
+            let tabs = String(repeating: "\t", count: max(0, listDepth - 1))
+            if isOrderedItem, let ordinal, startsItem {
+                runText = tabs + "\(ordinal). " + runText
+            } else if isUnorderedItem, startsItem {
+                // "- [ ] task" / "- [x] done" are checklist items.
+                if runText.hasPrefix("[ ] ") {
+                    runText = tabs + ListLine.uncheckedMarker + runText.dropFirst(4)
+                } else if runText.hasPrefix("[x] ") || runText.hasPrefix("[X] ") {
+                    runText = tabs + ListLine.checkedMarker + runText.dropFirst(4)
+                } else {
+                    runText = tabs + ListLine.bulletMarker + runText
+                }
             }
 
             result.append(NSAttributedString(string: runText, attributes: attrs))

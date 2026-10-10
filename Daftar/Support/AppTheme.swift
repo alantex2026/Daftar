@@ -4,30 +4,259 @@
 
 import SwiftUI
 import AppKit
+import Observation
 
-enum AppTheme {
+/// Every color the app's own chrome is drawn with, for one theme.
+struct ThemePalette {
     // Left sidebar
-    static let sidebar        = Color(red: 0.17, green: 0.17, blue: 0.18)
-    static let sidebarRowOn   = Color(red: 0.26, green: 0.26, blue: 0.28)
-    static let sidebarText    = Color(red: 0.93, green: 0.93, blue: 0.94)
-    static let sidebarLabel   = Color(red: 0.62, green: 0.63, blue: 0.65)
+    var sidebar: Color
+    var sidebarRowOn: Color
+    var sidebarText: Color
+    var sidebarLabel: Color
 
     // Middle column (the page outline)
-    static let outlineBack    = Color(red: 0.21, green: 0.21, blue: 0.22)
-    static let pageCard       = Color(red: 0.91, green: 0.91, blue: 0.91)
-    static let pageCardOn     = Color(red: 0.78, green: 0.79, blue: 0.80)
-    static let pageCardText   = Color(red: 0.13, green: 0.13, blue: 0.14)
+    var outlineBack: Color
+    var pageCard: Color
+    var pageCardOn: Color
+    var pageCardText: Color
 
     // Right side (tabs + paper)
-    static let tabStrip       = Color(red: 0.21, green: 0.21, blue: 0.22)
-    static let tabActive      = Color(red: 0.25, green: 0.56, blue: 0.75)
-    static let tabInactive    = Color(red: 0.30, green: 0.30, blue: 0.32)
-    // These track the system appearance instead of being pinned to light mode,
-    // since the paper is the one surface people stare at for hours.
-    static let paper          = Color(NSColor.textBackgroundColor)
-    static let paperText      = Color(NSColor.textColor)
+    var tabStrip: Color
+    var paper: Color
+    var paperText: Color
 
-    static let accent         = Color(red: 0.25, green: 0.56, blue: 0.75)
+    /// The theme's one accent: active tab marker, toggled toolbar buttons,
+    /// control tint, image handles.
+    var accent: Color
+    /// Confirmations such as "Saved" and spell check being on.
+    var success: Color
+
+    // AppKit surfaces. `nil` keeps the system's own color.
+    var textSelection: NSColor?
+    var caret: NSColor?
+    var toolbar: Color?
+    /// Paginated document sheets and their default text.
+    var documentPage: NSColor
+    var documentText: NSColor
+    /// Draw the sidebar with the system's translucent sidebar material
+    /// instead of the flat `sidebar` color.
+    var usesSidebarMaterial = false
+}
+
+/// The color themes people can pick in Settings > Appearance.
+enum ColorTheme: String, CaseIterable, Identifiable {
+    case classic, desert
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: return "Classic"
+        case .desert: return "Desert"
+        }
+    }
+
+    /// Desert is a warm light palette, so it pins the app to Light mode;
+    /// dark text-field and menu chrome would clash with sand and ivory.
+    var forcedColorScheme: ColorScheme? {
+        self == .desert ? .light : nil
+    }
+
+    /// Tint for system controls (toggles, selections). Classic keeps the
+    /// person's own macOS accent color.
+    var controlTint: Color? {
+        self == .desert ? palette.accent : nil
+    }
+
+    /// The colors shown next to the theme's name in Settings.
+    var swatches: [Color] {
+        switch self {
+        case .classic: return [palette.sidebar, palette.pageCard, palette.accent]
+        case .desert: return [palette.sidebar, Color(hex: 0xD8B896), palette.paper, palette.accent]
+        }
+    }
+
+    /// Built once: views read these colors on every redraw.
+    var palette: ThemePalette {
+        switch self {
+        case .classic: return Self.classicPalette
+        case .desert: return Self.desertPalette
+        }
+    }
+
+    /// A color that follows Light / Dark mode.
+    private static func adaptive(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        })
+    }
+    private static func gray(_ white: CGFloat, _ alpha: CGFloat = 1) -> NSColor {
+        NSColor(white: white, alpha: alpha)
+    }
+
+    // Follows the system appearance throughout: light chrome in Light mode,
+    // dark chrome in Dark mode, with system label and selection colors so
+    // text contrast and the person's accent color are always respected.
+    private static let classicPalette = ThemePalette(
+        sidebar:      adaptive(light: gray(0.93), dark: gray(0.17)),
+        sidebarRowOn: adaptive(light: gray(0, 0.08), dark: gray(1, 0.10)),
+        sidebarText:  Color(nsColor: .labelColor),
+        sidebarLabel: Color(nsColor: .secondaryLabelColor),
+        outlineBack:  adaptive(light: gray(0.965), dark: gray(0.155)),
+        pageCard:     adaptive(light: gray(1), dark: gray(0.215)),
+        pageCardOn:   Color(nsColor: .unemphasizedSelectedContentBackgroundColor),
+        pageCardText: Color(nsColor: .labelColor),
+        tabStrip:     adaptive(light: gray(0.94), dark: gray(0.155)),
+        // These track the system appearance instead of being pinned to light mode,
+        // since the paper is the one surface people stare at for hours.
+        paper:        Color(NSColor.textBackgroundColor),
+        paperText:    Color(NSColor.textColor),
+        accent:       Color(nsColor: .controlAccentColor),
+        success:      .green,
+        textSelection: nil,
+        caret:        nil,
+        toolbar:      nil,
+        documentPage: .white,
+        documentText: .black,
+        usesSidebarMaterial: true)
+
+    // Two planes and one accent: Pale Dune chrome, Warm Ivory paper, Desert
+    // Sand for selection, Sunburnt Clay as the accent and Cactus Green
+    // only for confirmations. Dark umber text keeps every label >= 4.5:1.
+    private static let desertPalette = ThemePalette(
+        sidebar:      Color(hex: 0xF1DFC7),   // Pale Dune
+        sidebarRowOn: Color(hex: 0xE2C8AA),   // Desert Sand at 60% on Pale Dune
+        sidebarText:  Color(hex: 0x2F2219),
+        sidebarLabel: Color(hex: 0x5C4535),
+        outlineBack:  Color(hex: 0xF1DFC7),   // Pale Dune
+        pageCard:     Color(hex: 0xFFF4E4),   // Warm Ivory
+        pageCardOn:   Color(hex: 0xE2C8AA),
+        pageCardText: Color(hex: 0x2F2219),
+        tabStrip:     Color(hex: 0xF1DFC7),   // Pale Dune
+        paper:        Color(hex: 0xFFF4E4),   // Warm Ivory
+        paperText:    Color(hex: 0x2F2219),
+        accent:       Color(hex: 0xB86F4E),   // Sunburnt Clay
+        success:      Color(hex: 0x6D7855),   // Cactus Green
+        textSelection: NSColor(Color(hex: 0xD8B896)),  // Desert Sand
+        caret:        NSColor(Color(hex: 0xB86F4E)),
+        toolbar:      Color(hex: 0xF1DFC7),
+        documentPage: NSColor(Color(hex: 0xFFF4E4)),
+        documentText: NSColor(Color(hex: 0x2F2219)))
+}
+
+/// The chosen color theme. Observable, so any view that reads an
+/// `AppTheme` color while drawing redraws when the theme changes.
+@Observable
+final class ThemeStore {
+    static let shared = ThemeStore()
+
+    var theme: ColorTheme {
+        didSet { defaults.set(theme.rawValue, forKey: AppSettings.colorTheme) }
+    }
+
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        theme = defaults.string(forKey: AppSettings.colorTheme).flatMap(ColorTheme.init(rawValue:)) ?? .classic
+    }
+}
+
+extension Color {
+    /// `Color(hex: 0xD8B896)` for a 24-bit sRGB color.
+    init(hex: UInt32) {
+        self.init(.sRGB,
+                  red: Double((hex >> 16) & 0xFF) / 255,
+                  green: Double((hex >> 8) & 0xFF) / 255,
+                  blue: Double(hex & 0xFF) / 255)
+    }
+}
+
+/// Light/dark mode and control tint for the chosen color theme. A view
+/// modifier (not the App body) so the theme read is observation-tracked.
+struct ThemedAppearance: ViewModifier {
+    @AppStorage(AppSettings.appearanceMode) private var appearanceMode = "system"
+
+    func body(content: Content) -> some View {
+        let theme = ThemeStore.shared.theme
+        content
+            .tint(theme.controlTint)
+            // Set on NSApp rather than with preferredColorScheme: SwiftUI on
+            // macOS doesn't reliably return to the system appearance when
+            // that goes back to nil, which would strand people in Light
+            // mode after trying Desert.
+            .onChange(of: "\(theme.rawValue)-\(appearanceMode)", initial: true) {
+                NSApp.appearance = Self.appearance(theme: theme, mode: appearanceMode)
+            }
+    }
+
+    static func appearance(theme: ColorTheme, mode: String) -> NSAppearance? {
+        switch theme.forcedColorScheme ?? (mode == "light" ? .light : mode == "dark" ? .dark : nil) {
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        default: return nil
+        }
+    }
+}
+
+/// Control tint for content in its own NSHostingView (the split-view panes),
+/// which doesn't inherit the window's SwiftUI environment.
+struct ThemedTint: ViewModifier {
+    func body(content: Content) -> some View {
+        content.tint(ThemeStore.shared.theme.controlTint)
+    }
+}
+
+extension View {
+    func themedAppearance() -> some View { modifier(ThemedAppearance()) }
+    func themedTint() -> some View { modifier(ThemedTint()) }
+
+    /// Rounded, inset selection highlight for list rows.
+    func selectionBackground(_ isSelected: Bool, color: Color) -> some View {
+        background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? color : .clear)
+                .padding(.horizontal, 6)
+        )
+    }
+}
+
+enum AppTheme {
+    private static var palette: ThemePalette { ThemeStore.shared.theme.palette }
+
+    // Left sidebar
+    static var sidebar: Color      { palette.sidebar }
+    static var usesSidebarMaterial: Bool { palette.usesSidebarMaterial }
+    static var sidebarRowOn: Color { palette.sidebarRowOn }
+    static var sidebarText: Color  { palette.sidebarText }
+    static var sidebarLabel: Color { palette.sidebarLabel }
+
+    // Middle column (the page outline)
+    static var outlineBack: Color  { palette.outlineBack }
+    static var pageCard: Color     { palette.pageCard }
+    static var pageCardOn: Color   { palette.pageCardOn }
+    static var pageCardText: Color { palette.pageCardText }
+
+    // Right side (tabs + paper)
+    static var tabStrip: Color     { palette.tabStrip }
+    static var paper: Color        { palette.paper }
+    static var paperText: Color    { palette.paperText }
+
+    static var accent: Color       { palette.accent }
+    static var success: Color      { palette.success }
+    static var toolbar: Color?     { palette.toolbar }
+
+    // AppKit
+    /// Accent for AppKit drawing (image handles); Classic follows macOS.
+    static var nsAccent: NSColor {
+        ThemeStore.shared.theme == .classic ? .controlAccentColor : NSColor(palette.accent)
+    }
+    static var textSelection: NSColor { palette.textSelection ?? .selectedTextBackgroundColor }
+    static var caret: NSColor?        { palette.caret }
+    static var documentPage: NSColor  { palette.documentPage }
+    static var documentText: NSColor  { palette.documentText }
+    /// Same as `nsAccent`, for SwiftUI views that used `Color.accentColor`.
+    static var controlAccent: Color   { ThemeStore.shared.theme.controlTint ?? .accentColor }
 
     /// The disclosure chevron for a collapsed/expanded row. SF Symbol
     /// chevrons don't auto-mirror for RTL the way logically-named symbols
@@ -77,6 +306,42 @@ enum PaletteColor: String, CaseIterable, Identifiable {
 }
 
 /// The little colored marks you can put on a page.
+/// What kind of document a page is - almost every page is `.richText`
+/// (the free-flowing editor); `.document` and `.spreadsheet` are
+/// alternate editors that use the same `Page` model but render and
+/// store their content differently (see `Page.spreadsheetData`).
+enum PageKind: Int, CaseIterable, Identifiable {
+    case richText = 0
+    case document = 1
+    case spreadsheet = 2
+
+    var id: Int { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .richText: return "Note"
+        case .document: return "Document"
+        case .spreadsheet: return "Spreadsheet"
+        }
+    }
+
+    var subtitle: LocalizedStringKey {
+        switch self {
+        case .richText: return "Free-flowing text, checklists, images"
+        case .document: return "Paginated, letter-sized pages"
+        case .spreadsheet: return "A grid with rows, columns, and formulas"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .richText: return "doc.text"
+        case .document: return "doc.richtext"
+        case .spreadsheet: return "tablecells"
+        }
+    }
+}
+
 enum PageTag: Int, CaseIterable, Identifiable {
     case none = 0, question = 1, star = 2, important = 3
 
@@ -155,7 +420,31 @@ struct SectionIcon: View {
     }
 }
 
+/// The system's translucent sidebar material, which shows the desktop
+/// through the window the way Finder's and Mail's sidebars do.
+struct SidebarMaterialBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
 extension View {
+    /// The sidebar's backdrop for the current theme: system material, or
+    /// the theme's flat color.
+    @ViewBuilder
+    func sidebarBackground() -> some View {
+        if AppTheme.usesSidebarMaterial {
+            background(SidebarMaterialBackground().ignoresSafeArea())
+        } else {
+            background(AppTheme.sidebar)
+        }
+    }
+
     /// A single tap and a double tap on the same row, correctly
     /// disambiguated - without this, SwiftUI can fire both a stacked
     /// `.onTapGesture(count: 1)` and `.onTapGesture(count: 2)` for the same
