@@ -6,6 +6,20 @@ import AppKit
 /// `attachment.bounds` alone is what let this bug through before.
 @MainActor
 final class InlineImageSizeTests: XCTestCase {
+
+    /// The tests run inside the app and read its real preferences; pin the
+    /// insert size to Medium (100%) so a personal choice of Small or Large
+    /// doesn't change what they measure. Tests that need another size set it.
+    private var savedImageSize: Any?
+    override func setUp() {
+        super.setUp()
+        savedImageSize = UserDefaults.standard.object(forKey: AppSettings.defaultImageSize)
+        UserDefaults.standard.set(InsertedImageSize.medium.rawValue, forKey: AppSettings.defaultImageSize)
+    }
+    override func tearDown() {
+        UserDefaults.standard.set(savedImageSize, forKey: AppSettings.defaultImageSize)
+        super.tearDown()
+    }
     private func png(_ w: Int, _ h: Int) -> Data {
         let image = NSImage(size: NSSize(width: w, height: h)); image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: w, height: h).fill(); image.unlockFocus()
         return NSBitmapImageRep(data: image.tiffRepresentation!)!.representation(using: .png, properties: [:])!

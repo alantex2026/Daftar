@@ -9,6 +9,20 @@ import AppKit
 @MainActor
 final class EditorControllerTests: XCTestCase {
 
+    /// The tests run inside the app and read its real preferences; pin the
+    /// insert size to Medium (100%) so a personal choice of Small or Large
+    /// doesn't change what they measure. Tests that need another size set it.
+    private var savedImageSize: Any?
+    override func setUp() {
+        super.setUp()
+        savedImageSize = UserDefaults.standard.object(forKey: AppSettings.defaultImageSize)
+        UserDefaults.standard.set(InsertedImageSize.medium.rawValue, forKey: AppSettings.defaultImageSize)
+    }
+    override func tearDown() {
+        UserDefaults.standard.set(savedImageSize, forKey: AppSettings.defaultImageSize)
+        super.tearDown()
+    }
+
     func testChecklistContentReturnsNilForPlainText() {
         XCTAssertNil(EditorController.checklistContent(of: "just a line"))
     }
