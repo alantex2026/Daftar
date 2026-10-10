@@ -126,7 +126,7 @@ final class Page {
 
     /// Cheap check that never encodes the history.
     var hasHistory: Bool {
-        if let payload { return !payload.revisionEntries.isEmpty || payload.legacyHistoryData != nil }
+        if let payload { return payload.hasRevisions || payload.legacyHistoryData != nil }
         return legacyHistoryData != nil
     }
 

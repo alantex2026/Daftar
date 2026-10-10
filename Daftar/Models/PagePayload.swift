@@ -33,15 +33,27 @@ final class PagePayload {
 
     // MARK: - History
 
+    /// The revisions that really belong to this page. After a rollback,
+    /// older SwiftData (macOS 15) can leave a discarded, never-saved row in
+    /// `revisionEntries`; it's detached (or deleted) while this payload is
+    /// still in the store, so it's left out. A payload not yet inserted
+    /// anywhere keeps all of its rows.
+    var liveEntries: [PageRevisionEntry] {
+        guard modelContext != nil else { return revisionEntries }
+        return revisionEntries.filter { $0.modelContext != nil && !$0.isDeleted }
+    }
+
+    var hasRevisions: Bool { !liveEntries.isEmpty }
+
     /// Newest first.
     var orderedEntries: [PageRevisionEntry] {
-        revisionEntries.sorted { $0.sequence > $1.sequence }
+        liveEntries.sorted { $0.sequence > $1.sequence }
     }
 
     /// The history as the JSON `[PageRevision]` used by backups, export and
     /// sync. Encoded on demand; only those paths read it.
     var historyJSON: Data? {
-        if revisionEntries.isEmpty { return legacyHistoryData }
+        if !hasRevisions { return legacyHistoryData }
         let entries = orderedEntries
         let ids = entries.map(\.revisionID)
         if let historyJSONCache, historyJSONCache.ids == ids { return historyJSONCache.data }

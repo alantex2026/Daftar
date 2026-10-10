@@ -52,7 +52,7 @@ enum PageHistory {
 
     /// Newest first. Throws only for damaged history that was never converted to rows.
     static func revisions(_ page: Page) throws -> [PageRevision] {
-        if let payload = page.payload, !payload.revisionEntries.isEmpty { return payload.orderedEntries.map(\.revision) }
+        if let payload = page.payload, payload.hasRevisions { return payload.orderedEntries.map(\.revision) }
         guard let data = page.historyData else { return [] }
         return try JSONDecoder().decode([PageRevision].self, from: data)
     }
@@ -92,7 +92,7 @@ enum PageHistory {
             payload.legacyHistoryData = nil
         }
         // History still stored as JSON (not yet migrated) becomes rows first.
-        if payload.revisionEntries.isEmpty, let legacy = payload.legacyHistoryData { payload.setHistoryJSON(legacy) }
+        if !payload.hasRevisions, let legacy = payload.legacyHistoryData { payload.setHistoryJSON(legacy) }
         payload.appendRevision(revision)
         // Keep the newest `limit` revisions within `byteLimit` (always at least one).
         var bytes = 0, kept = 0
