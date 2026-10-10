@@ -18,20 +18,23 @@ extension EditorController {
         spellCheckOn.toggle()
     }
 
-    /// Save the current page as a PDF file.
-    func exportPDF(to url: URL) {
+    /// Save the current page as a PDF file. Returns whether it was written.
+    @discardableResult
+    func exportPDF(to url: URL) -> Bool {
         guard let (printView, info) = printSetup() else {
             errorMessage = "Couldn't export as PDF."
-            return
+            return false
         }
         info.jobDisposition = .save
         info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL.rawValue] = url
         let operation = NSPrintOperation(view: printView, printInfo: info)
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
-        if !operation.run() {
+        guard operation.run(), FileManager.default.fileExists(atPath: url.path) else {
             errorMessage = "Couldn't export as PDF."
+            return false
         }
+        return true
     }
 
     /// File > Print (Cmd P): the standard print panel, laid out exactly like

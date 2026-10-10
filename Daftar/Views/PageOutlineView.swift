@@ -22,7 +22,6 @@ struct PageOutlineView: View {
     @Binding var searchText: String
 
     @State private var renamingID: PersistentIdentifier?
-    @State private var draftName = ""
     @State private var dropTarget: (page: Page, zone: PageDropZone)?
 
     // Search: filtering runs against `debouncedQuery` instead of `searchText`
@@ -212,11 +211,15 @@ struct PageOutlineView: View {
                         .help(page.kind.title)
                 }
                 if renamingID == page.persistentModelID {
-                    TextField("Title", text: $draftName)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 15))
-                        .foregroundStyle(AppTheme.pageCardText)
-                        .onSubmit { page.title = draftName; renamingID = nil }
+                    RenameField("Title", original: page.title, font: .system(size: 15), bordered: false,
+                                onCommit: { title in
+                                    try? PageHistory.capture(page)  // like editing the title in the page
+                                    page.title = title
+                                    page.updatedAt = Date()
+                                }) {
+                        if renamingID == page.persistentModelID { renamingID = nil }
+                    }
+                    .foregroundStyle(AppTheme.pageCardText)
                 } else {
                     Text(page.displayTitle)
                         .font(.system(size: 15))
@@ -244,7 +247,6 @@ struct PageOutlineView: View {
             .onSingleAndDoubleTap(single: { selectedPage = page; isFocused = true }, double: {
                 selectedPage = page
                 isFocused = true
-                draftName = page.title
                 renamingID = page.persistentModelID
             })
             .contextMenu { pageMenu(page) }
@@ -514,7 +516,7 @@ struct PageOutlineView: View {
                 Button(template.rawValue) { addPage(under: page, template: template) }
             }
         }
-        Button("Rename") { draftName = page.title; renamingID = page.persistentModelID }
+        Button("Rename") { renamingID = page.persistentModelID }
         Button("Duplicate") { duplicate(page) }
         Button(page.isPinned ? "Unpin" : "Pin") { page.togglePinned() }
         Menu("Tag") {

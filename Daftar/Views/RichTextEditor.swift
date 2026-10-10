@@ -374,10 +374,8 @@ struct RichTextEditor: NSViewRepresentable {
         if let data = initialData {
             PerfLog.measure("  RTFD decode (\(data.count) bytes)") {
                 do {
-                    let attributed = try NSAttributedString(
-                        data: data,
-                        options: [.documentType: NSAttributedString.DocumentType.rtfd],
-                        documentAttributes: nil)
+                    // Reuses the copy the page-open check just decoded.
+                    let attributed = try PageContentCodec.richTextForEditor(data)
                     textView.textStorage?.setAttributedString(attributed)
                 } catch {
                     loadFailed = true

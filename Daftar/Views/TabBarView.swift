@@ -95,6 +95,13 @@ struct TabBarView: View {
                 .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? AppTheme.paperText : AppTheme.sidebarText.opacity(0.75))
                 .lineLimit(1)
+            // Two open sections called "Ideas" in different notebooks: say which is which.
+            if let notebook = section.notebook, Self.needsNotebookName(section, among: openTabs) {
+                Text(notebook.name)
+                    .font(.system(size: 11))
+                    .foregroundStyle((isActive ? AppTheme.paperText : AppTheme.sidebarText).opacity(0.5))
+                    .lineLimit(1)
+            }
             Button {
                 close(section)
             } label: {
@@ -117,11 +124,26 @@ struct TabBarView: View {
             }
         }
         .contentShape(Rectangle())
+        .help(Self.path(of: section))
         .onTapGesture { selectedSection = section }
         .contextMenu {
             Button("Close Tab") { close(section) }
             Button("Close Other Tabs") { openTabs = [section]; selectedSection = section }
         }
+    }
+
+    /// True when another open tab has the same name.
+    static func needsNotebookName(_ section: NoteSection, among tabs: [NoteSection]) -> Bool {
+        tabs.contains { $0 !== section && $0.name.localizedCaseInsensitiveCompare(section.name) == .orderedSame }
+    }
+
+    /// "Notebook › Group › Section", for the tab's tooltip.
+    static func path(of section: NoteSection) -> String {
+        var parts: [String] = []
+        var current: NoteSection? = section
+        while let item = current { parts.insert(item.name, at: 0); current = item.parent }
+        if let notebook = section.notebook { parts.insert(notebook.name, at: 0) }
+        return parts.joined(separator: " \u{203A} ")
     }
 
     private func close(_ section: NoteSection) {

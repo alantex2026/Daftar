@@ -40,7 +40,7 @@ struct PaginatedTextEditor: NSViewRepresentable {
         textStorage.addLayoutManager(layoutManager)
 
         var loadFailed = false
-        do { textStorage.setAttributedString(try PageContentCodec.richText(initialData)) }
+        do { textStorage.setAttributedString(try initialData.map(PageContentCodec.richTextForEditor) ?? NSAttributedString()) }
         catch { loadFailed = true }
 
         let pagesView = PaginatedPagesView(layoutManager: layoutManager, textStorage: textStorage, pageSize: Self.size(for: paperSize))

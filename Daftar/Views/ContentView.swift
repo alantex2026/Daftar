@@ -119,10 +119,16 @@ struct ContentView: View {
             }
             saveSession()
         }
-        .onChange(of: selectedPage) { _, _ in saveSession() }
+        .onChange(of: selectedPage) { _, _ in
+            followSelectedPage()
+            saveSession()
+        }
         // Sync, Trash and auto-purge can delete models this window still
         // references; drop those references before anything reads them.
-        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in pruneDeletedSelection() }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in
+            pruneDeletedSelection()
+            followSelectedPage()  // the open page may have been moved
+        }
         // A scoped subscription instead of @ObservedObject - this is the
         // one piece of editor state ContentView itself needs to react to.
         .onReceive(editor.$errorMessage) { errorMessage = $0 }
@@ -218,6 +224,16 @@ struct ContentView: View {
             if let section, selectedPage?.section !== section { selectedPage = section.rootPages.first }
             selectedSection = section
         })
+    }
+
+    /// Keeps the selected section (and its tab) on the open page's own
+    /// section - after picking a search result from elsewhere, or after the
+    /// page was moved - so the list, tabs and editor always agree.
+    private func followSelectedPage() {
+        guard let page = selectedPage, !page.isDeleted, page.modelContext != nil,
+              let owner = page.section, owner !== selectedSection,
+              !owner.isTrashed, sectionLock.canShow(page) else { return }
+        selectedSection = owner
     }
 
     private func pruneDeletedSelection() {

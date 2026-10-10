@@ -1,7 +1,9 @@
 //  TrashMaintenance.swift
 //  Permanently removes items that have sat in the Trash past the retention
 //  window, so the Trash doesn't grow forever for anyone who never empties
-//  it by hand. Runs once at launch; off by default toggle lives in Settings.
+//  it by hand. Runs once at launch. On by default (like Notes' Recently
+//  Deleted); the toggle lives in Settings > Trash, and the Trash window says
+//  when items will go.
 
 import Foundation
 import SwiftData

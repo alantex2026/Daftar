@@ -25,9 +25,34 @@ enum PageContentCodec {
         return result
     }
 
-    static func validate(_ page: Page) throws {
+    @MainActor static func validate(_ page: Page) throws {
         if page.kind == .spreadsheet { _ = try spreadsheet(page.spreadsheetData) }
-        else { _ = try richText(page.contentData) }
+        else {
+            let text = try richText(page.contentData)
+            if let data = page.contentData { handOff(text, decodedFrom: data) }
+        }
+    }
+
+    // MARK: - One decode per page open
+
+    /// The text `validate` just decoded, waiting for the editor that opens
+    /// next - so opening a page decodes its RTFD once, not twice. Used at
+    /// most once: an editor owns (and mutates) its attachments, so two
+    /// editors must never share one decoded copy.
+    @MainActor private static var handedOff: (data: Data, text: NSAttributedString)?
+
+    @MainActor private static func handOff(_ text: NSAttributedString, decodedFrom data: Data) {
+        handedOff = (data, text)
+    }
+
+    /// `data` decoded, reusing the copy `validate` made for the same bytes.
+    @MainActor static func richTextForEditor(_ data: Data) throws -> NSAttributedString {
+        if let handedOff, handedOff.data == data {
+            self.handedOff = nil
+            return handedOff.text
+        }
+        handedOff = nil
+        return try richText(data)
     }
 
     static func remapLinks(_ data: Data, ids: [UUID: UUID]) throws -> Data {

@@ -133,6 +133,10 @@ final class FolderSync: ObservableObject {
     private var lastRemoteSignature: String?
     /// Digest of the envelope this device last published, to avoid re-uploading it.
     private var lastPublishedDigest: String?
+    /// When the library last saved, and since when the timer has been
+    /// waiting for typing to pause (see `shouldWaitForPause`).
+    private var lastSaveAt = Date.distantPast
+    private var waitingSince: Date?
 
     init(defaults: UserDefaults = .standard, localDirectory: URL? = nil) {
         self.defaults = defaults
@@ -170,7 +174,21 @@ final class FolderSync: ObservableObject {
         }
     }
 
-    private func noteSave() { localChanged = true; saveCount += 1 }
+    private func noteSave() { localChanged = true; saveCount += 1; lastSaveAt = Date() }
+
+    /// The timer's sync captures the whole library on the main thread, so it
+    /// waits until saves pause for `quietPeriod` instead of stuttering while
+    /// someone types - but never longer than `maxWait`.
+    static let quietPeriod: TimeInterval = 10
+    static let maxWait: TimeInterval = 120
+    static func shouldWaitForPause(now: Date, lastSave: Date, waitingSince: inout Date?) -> Bool {
+        guard now.timeIntervalSince(lastSave) < quietPeriod else { waitingSince = nil; return false }
+        let start = waitingSince ?? now
+        waitingSince = start
+        if now.timeIntervalSince(start) < maxWait { return true }
+        waitingSince = nil
+        return false
+    }
 
     func chooseFolder(_ url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -190,6 +208,8 @@ final class FolderSync: ObservableObject {
     /// nothing was saved locally and no other device's sync file changed.
     func syncNow(onlyIfChanged: Bool = false) {
         guard enabled, !busy, let context, let locks else { return }
+        if onlyIfChanged, localChanged,
+           Self.shouldWaitForPause(now: Date(), lastSave: lastSaveAt, waitingSince: &waitingSince) { return }
         busy = true; status = "Syncing…"
         syncTask = Task {
             defer { busy = false }

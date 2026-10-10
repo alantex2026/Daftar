@@ -14,6 +14,7 @@ struct TrashView: View {
     @Query private var sections: [NoteSection]
     @Query private var pages: [Page]
 
+    @AppStorage(AppSettings.autoEmptyTrashEnabled) private var autoEmpties = true
     @State private var pendingDelete: Row?
     @State private var confirmEmptyAll = false
 
@@ -76,7 +77,9 @@ struct TrashView: View {
                 .font(.system(size: 30))
                 .foregroundStyle(.secondary)
             Text("Trash Is Empty").font(.system(size: 14, weight: .medium))
-            Text("Deleted notebooks, sections, and pages stay here until you empty the trash.")
+            Text(autoEmpties
+                 ? "Deleted notebooks, sections, and pages stay here for \(TrashMaintenance.retentionDays) days, then are removed. You can turn this off in Settings."
+                 : "Deleted notebooks, sections, and pages stay here until you empty the trash.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -90,7 +93,7 @@ struct TrashView: View {
             icon(for: row.kind)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.name).font(.system(size: 14, weight: .medium)).lineLimit(1)
-                Text("Deleted \(row.deletedAt.formatted(.relative(presentation: .named)))")
+                Text(subtitle(for: row))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -148,6 +151,20 @@ struct TrashView: View {
             return Row(id: page.persistentModelID, kind: .page(page), name: page.displayTitle, deletedAt: deletedAt)
         }
         return (nb + sec + pg).sorted { $0.deletedAt > $1.deletedAt }
+    }
+
+    /// "Deleted yesterday · removed in 29 days" when the Trash empties itself.
+    private func subtitle(for row: Row) -> String {
+        let deleted = String(localized: "Deleted \(row.deletedAt.formatted(.relative(presentation: .named)))")
+        guard autoEmpties else { return deleted }
+        let removal = Calendar.current.date(byAdding: .day, value: TrashMaintenance.retentionDays, to: row.deletedAt) ?? row.deletedAt
+        let days = max(0, Calendar.current.dateComponents([.day], from: Date(), to: removal).day ?? 0)
+        let left = switch days {
+        case 0: String(localized: "removed at next launch")
+        case 1: String(localized: "removed tomorrow")
+        default: String(localized: "removed in \(days) days")
+        }
+        return deleted + " \u{00B7} " + left
     }
 
     // MARK: Actions

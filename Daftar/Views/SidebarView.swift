@@ -28,7 +28,6 @@ struct SidebarView: View {
 
     @State private var showPinned = true
     @State private var renamingID: PersistentIdentifier?
-    @State private var draftName = ""
     @State private var showTrash = false
     @State private var draggedNotebook: Notebook?
     @State private var draggedSection: NoteSection?
@@ -198,7 +197,7 @@ struct SidebarView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(AppTheme.sidebarLabel)
                 }
-                Text("\(section.totalPageCount)")
+                Text("\(item.pageCount)")
                     .font(.system(size: 12))
                     .foregroundStyle(AppTheme.sidebarLabel)
             }
@@ -263,10 +262,9 @@ struct SidebarView: View {
                              weight: Font.Weight,
                              commit: @escaping (String) -> Void) -> some View {
         if renamingID == id {
-            TextField("Name", text: $draftName)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 14))
-                .onSubmit { commit(draftName); renamingID = nil }
+            RenameField("Name", original: text, onCommit: commit) {
+                if renamingID == id { renamingID = nil }
+            }
         } else {
             Text(text)
                 .font(.system(size: 14, weight: weight))
@@ -318,6 +316,8 @@ struct SidebarView: View {
         let id: PersistentIdentifier
         let kind: Kind
         let depth: Int
+        /// Live pages in a section, sub-sections included; 0 for notebooks.
+        var pageCount = 0
     }
 
     private var treeItems: [TreeItem] {
@@ -325,17 +325,32 @@ struct SidebarView: View {
             var result: [TreeItem] = []
             for notebook in notebooks where !notebook.isTrashed {
                 result.append(TreeItem(id: notebook.persistentModelID, kind: .notebook(notebook), depth: 0))
-                if notebook.isExpanded { append(notebook.topLevelSections, depth: 1, into: &result) }
+                guard notebook.isExpanded else { continue }
+                // Counted once per section here, instead of each row (and
+                // each enclosing group again) recounting on every redraw.
+                var counts: [ObjectIdentifier: Int] = [:]
+                for section in notebook.topLevelSections { _ = Self.countPages(in: section, into: &counts) }
+                append(notebook.topLevelSections, depth: 1, counts: counts, into: &result)
             }
             return result
         }
     }
 
-    private func append(_ sections: [NoteSection], depth: Int, into result: inout [TreeItem]) {
+    /// Live pages in `section` and everything inside it, recording each
+    /// section's total along the way.
+    static func countPages(in section: NoteSection, into counts: inout [ObjectIdentifier: Int]) -> Int {
+        let own = section.pages.reduce(0) { $0 + ($1.isTrashed ? 0 : 1) }
+        let total = section.sortedChildren.reduce(own) { $0 + countPages(in: $1, into: &counts) }
+        counts[ObjectIdentifier(section)] = total
+        return total
+    }
+
+    private func append(_ sections: [NoteSection], depth: Int, counts: [ObjectIdentifier: Int], into result: inout [TreeItem]) {
         for section in sections {
-            result.append(TreeItem(id: section.persistentModelID, kind: .section(section), depth: depth))
+            result.append(TreeItem(id: section.persistentModelID, kind: .section(section), depth: depth,
+                                   pageCount: counts[ObjectIdentifier(section)] ?? 0))
             if section.isGroup && section.isExpanded {
-                append(section.sortedChildren, depth: depth + 1, into: &result)
+                append(section.sortedChildren, depth: depth + 1, counts: counts, into: &result)
             }
         }
     }
@@ -444,7 +459,6 @@ struct SidebarView: View {
     }
 
     private func startRename(_ id: PersistentIdentifier, _ current: String) {
-        draftName = current
         renamingID = id
     }
 

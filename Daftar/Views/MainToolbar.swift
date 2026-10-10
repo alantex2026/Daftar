@@ -616,10 +616,13 @@ struct ShareMenu: View {
     /// destination is chosen by the share picker instead of a save panel.
     private func presentShareSheet() {
         guard let anchor = NSApp.keyWindow?.contentView else { return }
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(page?.displayTitle ?? "Page")
-            .appendingPathExtension("pdf")
-        editor.exportPDF(to: tempURL)
+        // A folder of its own per share, and a file name made safe: a "/" or
+        // ":" in the page title used to produce a path that couldn't be written.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        catch { editor.errorMessage = "Couldn't prepare the page for sharing."; return }
+        let tempURL = SaveCoordinator.rescueURL(named: page?.displayTitle ?? "Page", extension: "pdf", in: folder)
+        guard editor.exportPDF(to: tempURL) else { return }  // exportPDF reports the error
         let picker = NSSharingServicePicker(items: [tempURL])
         sharingPicker = picker
         picker.show(relativeTo: .zero, of: anchor, preferredEdge: .maxY)
